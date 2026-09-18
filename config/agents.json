@@ -1,0 +1,1020 @@
+{
+  "$schema": "./agents.schema.json",
+  "shared": {
+    "instructions_root": {
+      "references": {
+        "docs": "https://agents.md"
+      },
+      "user": ".agents/AGENTS.md",
+      "project": "AGENTS.md"
+    },
+    "skills_root": {
+      "references": {
+        "docs": "https://agentskills.io"
+      },
+      "user": ".agents/skills",
+      "project": ".agents/skills"
+    },
+    "mcp_root": {
+      "references": {
+        "docs": "https://modelcontextprotocol.io/"
+      },
+      "user": ".agents/mcp.json",
+      "project": ".agents/mcp.json"
+    }
+  },
+  "agents": {
+    "claude-code": {
+      "name": "Claude Code",
+      "vendor": "Anthropic",
+      "references": {
+        "docs": "https://code.claude.com/docs"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://code.claude.com/docs/en/settings"
+        },
+        "scope": {
+          "user": ".claude/CLAUDE.md",
+          "project": "CLAUDE.md"
+        },
+        "template_override": {
+          "project": "templates/fragments/claude-code.project.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://code.claude.com/docs/en/skills"
+        },
+        "scope": {
+          "user": {
+            "path": ".claude/skills",
+            "mode": "link-each"
+          },
+          "project": {
+            "path": ".claude/skills",
+            "mode": "link-dir"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://code.claude.com/docs/en/mcp",
+            "https://code.claude.com/docs/en/mcp-quickstart",
+            "https://code.claude.com/docs/en/settings",
+            "https://code.claude.com/docs/en/skills"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".claude.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "codex": {
+      "name": "OpenAI Codex",
+      "vendor": "OpenAI",
+      "references": {
+        "docs": "https://developers.openai.com/codex/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+            "https://learn.chatgpt.com/docs/customization/overview"
+          ]
+        },
+        "scope": {
+          "user": ".codex/AGENTS.md",
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": [
+            "https://github.com/openai/skills"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".codex/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://learn.chatgpt.com/docs/extend/mcp",
+            "https://github.com/openai/plugins",
+            "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+            "https://learn.chatgpt.com/docs/customization/overview",
+            "https://github.com/openai/skills"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".codex/config.toml",
+            "format": "toml",
+            "key": "mcp_servers"
+          },
+          "project": {
+            "path": ".codex/config.toml",
+            "format": "toml",
+            "key": "mcp_servers"
+          }
+        }
+      }
+    },
+    "antigravity": {
+      "name": "Antigravity",
+      "vendor": "Google",
+      "references": {
+        "docs": "https://antigravity.google/docs/getting-started"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://antigravity.google/docs/rules-workflows"
+        },
+        "scope": {
+          "user": ".gemini/GEMINI.md",
+          "project": ".agents/rules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://antigravity.google/docs/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/config/skills",
+            "mode": "link-each"
+          },
+          "project": {
+            "path": "standard",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://antigravity.google/docs/mcp/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/config/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".agents/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "antigravity-cli": {
+      "name": "Antigravity CLI",
+      "vendor": "Google",
+      "references": {
+        "docs": [
+          "https://antigravity.google/docs/cli/",
+          "https://antigravity.google/docs/cli/gcli-migration/"
+        ]
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://antigravity.google/docs/rules-workflows"
+        },
+        "scope": {
+          "user": ".gemini/antigravity-cli/rules/agents-entry.md",
+          "project": ".agents/rules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://antigravity.google/docs/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/antigravity-cli/skills",
+            "mode": "link-each"
+          },
+          "project": {
+            "path": "standard",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://antigravity.google/docs/mcp/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/config/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".agents/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "antigravity-ide": {
+      "name": "Antigravity IDE",
+      "vendor": "Google",
+      "references": {
+        "docs": "https://antigravity.google/docs/ide/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://antigravity.google/docs/rules-workflows"
+        },
+        "scope": {
+          "user": ".gemini/GEMINI.md",
+          "project": ".agents/rules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://antigravity.google/docs/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/config/skills",
+            "mode": "link-each"
+          },
+          "project": {
+            "path": "standard",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://antigravity.google/docs/mcp/"
+        },
+        "scope": {
+          "user": {
+            "path": ".gemini/config/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".agents/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "cursor": {
+      "name": "Cursor",
+      "vendor": "Anysphere",
+      "references": {
+        "docs": "https://cursor.com/docs"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://cursor.com/docs/rules"
+        },
+        "scope": {
+          "user": null,
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://cursor.com/docs/skills"
+        },
+        "scope": {
+          "user": {
+            "path": ".cursor/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": ".cursor/skills",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://cursor.com/docs/mcp"
+        },
+        "scope": {
+          "user": {
+            "path": ".cursor/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".cursor/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "copilot": {
+      "name": "GitHub Copilot",
+      "vendor": "GitHub",
+      "references": {
+        "docs": [
+          "https://docs.github.com/en/copilot",
+          "https://docs.github.com/en/copilot/reference/customization-cheat-sheet"
+        ]
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://docs.github.com/en/copilot/reference/custom-instructions-support",
+            "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
+            "https://docs.github.com/en/copilot/tutorials/customization-library/custom-instructions"
+          ]
+        },
+        "scope": {
+          "user": ".copilot/copilot-instructions.md",
+          "project": ".github/copilot-instructions.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": [
+            "https://docs.github.com/en/copilot/concepts/agents/about-agent-skills",
+            "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
+            "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#skills-reference",
+            "https://awesome-copilot.github.com/skills/"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".copilot/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": ".github/skills",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",
+            "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#mcp-server-configuration"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "codebuddy": {
+      "name": "CodeBuddy Code",
+      "vendor": "腾讯",
+      "references": {
+        "docs": "https://www.codebuddy.ai/docs/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://www.codebuddy.ai/docs/ide/User-guide/Rules",
+            "https://www.codebuddy.ai/docs/cli/memory"
+          ]
+        },
+        "scope": {
+          "user": null,
+          "project": "CODEBUDDY.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": [
+            "https://www.codebuddy.ai/docs/ide/Features/Skills",
+            "https://www.codebuddy.ai/docs/cli/skills"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://www.codebuddy.ai/docs/cli/mcp"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "qoder": {
+      "name": "Qoder",
+      "vendor": "阿里巴巴",
+      "references": {
+        "docs": "https://docs.qoder.com/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://docs.qoder.com/cli/memory",
+            "https://docs.qoder.com/zh/user-guide/rules"
+          ]
+        },
+        "scope": {
+          "user": null,
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": [
+            "https://docs.qoder.com/cli/Skills",
+            "https://docs.qoder.com/zh/extensions/skills"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://docs.qoder.com/zh/cli/mcp-servers",
+            "https://docs.qoder.com/zh/user-guide/chat/model-context-protocol"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "qwen-code": {
+      "name": "Qwen Code",
+      "vendor": "阿里巴巴",
+      "references": {
+        "docs": "https://qwenlm.github.io/qwen-code-docs/zh/users/overview/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://qwenlm.github.io/qwen-code-docs/zh/users/features/memory/"
+        },
+        "scope": {
+          "user": ".qwen/QWEN.md",
+          "project": "QWEN.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://qwenlm.github.io/qwen-code-docs/zh/users/features/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".qwen/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://qwenlm.github.io/qwen-code-docs/zh/users/features/mcp/"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "zcode": {
+      "name": "ZCode",
+      "vendor": "Z.ai",
+      "references": {
+        "docs": "https://zcode.z.ai/en/docs"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://zcode.z.ai/en/docs/agents"
+          ]
+        },
+        "scope": {
+          "user": ".zcode/AGENTS.md",
+          "project": "standard"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://zcode.z.ai/en/docs/skill"
+        },
+        "scope": {
+          "user": {
+            "path": ".zcode/skills",
+            "mode": "link-each"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://zcode.z.ai/en/docs/mcp-services"
+        },
+        "scope": {
+          "user": {
+            "path": ".zcode/cli/config.json",
+            "format": "json",
+            "key": "mcp.servers"
+          },
+          "project": {
+            "path": ".zcode/config.json",
+            "format": "json",
+            "key": "mcp.servers"
+          }
+        }
+      }
+    },
+    "kiro": {
+      "name": "Kiro",
+      "vendor": "AWS",
+      "references": {
+        "docs": "https://kiro.dev/docs/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://kiro.dev/docs/steering/"
+          ]
+        },
+        "scope": {
+          "user": ".kiro/steering/agents-entry.md",
+          "project": ".kiro/steering/agents-entry.md"
+        },
+        "template_frontmatter": {
+          "user": "templates/fragments/kiro.frontmatter",
+          "project": "templates/fragments/kiro.frontmatter"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://kiro.dev/docs/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".kiro/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": ".kiro/skills",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://kiro.dev/docs/steering/",
+            "https://kiro.dev/docs/skills/"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".kiro/settings/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": ".kiro/settings/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "trae": {
+      "name": "TRAE",
+      "vendor": "字节跳动",
+      "references": {
+        "docs": "https://docs.trae.ai/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://docs.trae.ai/ide/rules"
+        },
+        "scope": {
+          "user": null,
+          "project": ".trae/rules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://docs.trae.ai/ide/skills"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://docs.trae.ai/ide/add-mcp-servers"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "devin": {
+      "name": "Devin CLI",
+      "vendor": "Cognition",
+      "references": {
+        "docs": "https://docs.devin.ai/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://docs.devin.ai/desktop/cascade/memories",
+            "https://docs.devin.ai/desktop/cascade/agents-md"
+          ]
+        },
+        "scope": {
+          "user": ".config/devin/AGENTS.md",
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://docs.devin.ai/desktop/cascade/skills"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://docs.devin.ai/desktop/cascade/mcp"
+        },
+        "scope": {
+          "user": {
+            "path": ".codeium/windsurf/mcp_config.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "cline": {
+      "name": "Cline",
+      "vendor": "Cline",
+      "references": {
+        "docs": "https://docs.cline.bot/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://docs.cline.bot/customization/cline-rules",
+            "https://docs.cline.bot/getting-started/config"
+          ]
+        },
+        "scope": {
+          "user": ".cline/rules/agents-entry.md",
+          "project": ".clinerules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://docs.cline.bot/customization/skills"
+        },
+        "scope": {
+          "user": {
+            "path": ".cline/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": ".cline/skills",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://docs.cline.bot/mcp/mcp-overview"
+        },
+        "scope": {
+          "user": {
+            "path": ".cline/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    },
+    "roo-code": {
+      "name": "Roo Code",
+      "vendor": "Roo",
+      "references": {
+        "docs": "https://docs.roocode.com/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://roocodeinc.github.io/Roo-Code/features/custom-instructions/"
+        },
+        "scope": {
+          "user": ".roo/rules/agents-entry.md",
+          "project": ".roo/rules/agents-entry.md"
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://roocodeinc.github.io/Roo-Code/features/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": ".roo/skills",
+            "mode": "none"
+          },
+          "project": {
+            "path": ".roo/skills",
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://roocodeinc.github.io/Roo-Code/features/mcp/overview"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": ".roo/mcp.json",
+            "format": "json",
+            "key": "mcpServers"
+          }
+        }
+      }
+    },
+    "continue": {
+      "name": "Continue",
+      "vendor": "Continue",
+      "references": {
+        "docs": "https://docs.continue.dev/"
+      },
+      "instructions": {
+        "references": {
+          "docs": [
+            "https://docs.continue.dev/guides/understanding-configs",
+            "https://docs.continue.dev/customize/rules",
+            "https://docs.continue.dev/customize/prompts"
+          ]
+        },
+        "scope": {
+          "user": ".continue/rules/agents-entry.md",
+          "project": ".continue/rules/agents-entry.md"
+        },
+        "template_frontmatter": {
+          "user": "templates/fragments/continue.frontmatter",
+          "project": "templates/fragments/continue.frontmatter"
+        }
+      },
+      "skills": {
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": [
+            "https://docs.continue.dev/reference/continue-mcp",
+            "https://docs.continue.dev/customize/deep-dives/mcp",
+            "https://docs.continue.dev/customize/mcp-tools"
+          ]
+        },
+        "scope": {
+          "user": {
+            "path": ".continue/mcpServers",
+            "format": "dir",
+            "key": null
+          },
+          "project": {
+            "path": ".continue/mcpServers",
+            "format": "dir",
+            "key": null
+          }
+        }
+      }
+    },
+    "opencode": {
+      "name": "OpenCode",
+      "vendor": "OpenCode",
+      "references": {
+        "docs": "https://opencode.ai/docs/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://opencode.ai/docs/rules/"
+        },
+        "scope": {
+          "user": ".config/opencode/AGENTS.md",
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://opencode.ai/docs/skills/"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://opencode.ai/docs/mcp-servers/"
+        },
+        "scope": {
+          "user": {
+            "path": ".config/opencode/opencode.json",
+            "format": "json",
+            "key": "mcp"
+          },
+          "project": {
+            "path": "opencode.json",
+            "format": "json",
+            "key": "mcp"
+          }
+        }
+      }
+    },
+    "kimi-code": {
+      "name": "Kimi Code",
+      "vendor": "月之暗面",
+      "references": {
+        "docs": "https://www.kimi.com/code/docs/"
+      },
+      "instructions": {
+        "references": {
+          "docs": "https://www.kimi.com/code/docs/kimi-code-cli/customization/agents.html"
+        },
+        "scope": {
+          "user": null,
+          "project": null
+        }
+      },
+      "skills": {
+        "references": {
+          "docs": "https://www.kimi.com/code/docs/kimi-code-cli/customization/skills.html"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "mode": "none"
+          },
+          "project": {
+            "path": null,
+            "mode": "none"
+          }
+        }
+      },
+      "mcp": {
+        "references": {
+          "docs": "https://www.kimi.com/code/docs/kimi-code-cli/customization/mcp.html"
+        },
+        "scope": {
+          "user": {
+            "path": null,
+            "format": null,
+            "key": null
+          },
+          "project": {
+            "path": null,
+            "format": null,
+            "key": null
+          }
+        }
+      }
+    }
+  }
+}

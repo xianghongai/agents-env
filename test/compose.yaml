@@ -1,0 +1,77 @@
+# 自包含的测试环境。仓库以只读方式挂载到 /workspace。
+#
+#   docker compose -f test/compose.yaml run --rm test
+#   docker compose -f test/compose.yaml run --rm test-bash32
+#
+# 需要严格隔离时追加 --network none 等参数直接用 docker run，见各服务注释。
+name: agents-env-test
+
+x-mount: &mount
+  volumes:
+    - type: bind
+      source: ..
+      target: /workspace
+      read_only: true
+  working_dir: /workspace
+  init: true
+  restart: 'no'
+
+services:
+  # Bash 5 / Zsh，GNU coreutils。默认跑两种 Shell 的全量测试。
+  test:
+    <<: *mount
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM ubuntu:24.04
+        ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+              bash zsh jq git shellcheck shfmt expect ca-certificates curl \
+            && rm -rf /var/lib/apt/lists/*
+        WORKDIR /workspace
+    image: agents-env-test:latest
+    command: >
+      bash -c '
+      bash -n setup-instructions.sh && zsh -n setup-instructions.sh &&
+      shellcheck --shell=bash --severity=style setup-instructions.sh &&
+      shfmt -d -i 2 -ci setup-instructions.sh &&
+      for sh in bash zsh; do
+        TEST_SHELL=$$sh bash test/run-tests.sh || exit 1;
+        TEST_SHELL=$$sh bash test/skills-tests.sh || exit 1;
+      done'
+
+  # Bash 3.2，与 macOS 自带版本一致；Alpine + BusyBox，另覆盖一层用户空间差异。
+  test-bash32:
+    <<: *mount
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM bash:3.2
+        RUN apk add --no-cache jq git
+        WORKDIR /workspace
+    image: agents-env-test-bash32:latest
+    command: >
+      bash -c '
+      TEST_SHELL=bash bash test/run-tests.sh &&
+      TEST_SHELL=bash bash test/skills-tests.sh'
+
+  # PTY 交互测试。用 HOME 隔离：零参数才进交互模式，不能传 --target。
+  test-pty:
+    <<: *mount
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM ubuntu:24.04
+        ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+              bash zsh jq git expect ca-certificates \
+            && rm -rf /var/lib/apt/lists/*
+        WORKDIR /workspace
+    image: agents-env-test:pty
+    command: >
+      bash -c '
+      for sh in bash zsh; do
+        H=$$(mktemp -d); mkdir -p "$$H/.claude" "$$H/.agents/skills/demo-skill";
+        printf "x\n" > "$$H/.agents/skills/demo-skill/SKILL.md";
+        HOME=$$H expect test/pty-tests.exp $$sh || exit 1;
+      done'

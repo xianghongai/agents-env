@@ -1,0 +1,105 @@
+#!/usr/bin/expect -f
+# PTY 交互验证：只在容器内执行，只覆盖核心交互路径。
+# 用 HOME 隔离：零参数才进交互模式，不能传 --target。
+set timeout 20
+set script "/workspace/setup-instructions.sh"
+set registry "/workspace/config/agents.json"
+set shell [lindex $argv 0]
+set home $env(HOME)
+
+# 探针路径从注册表推导，清单增删 Agent 不影响本文件。
+set probe [exec sh -c "jq -r '.agents | to_entries\[\] | select((.value.instructions.scope.user // \"\") != \"\") | .value.instructions.scope.user' $registry | head -1"]
+if {$probe eq ""} { puts "前提不满足：注册表中无 user 入口"; exit 1 }
+set pass 0
+set fail 0
+
+proc ok {m} { global pass; incr pass; puts "  \[ok\]   $m" }
+proc bad {m} { global fail; incr fail; puts "  \[FAIL\] $m" }
+
+# --- 方向键选范围 + 多选 Agent + 确认，走完整条安装路径 ---
+spawn $shell $script
+expect {
+  timeout { bad "未出现范围菜单"; exit 1 }
+  "选择安装范围" { ok "出现范围菜单" }
+}
+send "\r"
+expect {
+  timeout { bad "回车未确认范围"; exit 1 }
+  "已选择：user" { ok "回车确认默认范围 user" }
+}
+expect {
+  timeout { bad "未出现 Agent 菜单"; exit 1 }
+  "选择要安装的 Agent" { ok "出现 Agent 多选菜单" }
+}
+expect {
+  timeout { bad "未渲染勾选框" }
+  "未选择任何 Agent" { ok "默认一项不选" }
+}
+# 零选中时回车不应放行
+send "\r"
+sleep 0.3
+send "a"
+expect {
+  timeout { bad "a 未能全选" }
+  -re "已选择 \[0-9\]+ 项" { ok "零选中时回车不放行，a 可全选" }
+}
+send "\r"
+expect {
+  timeout { bad "未进入计划展示" }
+  -re "范围：user" { ok "范围随菜单选择生效" }
+}
+expect {
+  timeout { bad "未出现确认提示"; exit 1 }
+  -re "按以上计划执行？" { ok "出现确认提示" }
+}
+if {[file exists "$home/$probe"]} {
+  bad "确认前已写入文件"
+} else {
+  ok "确认前无持久化修改"
+}
+send "\r"
+expect {
+  timeout { bad "确认后未完成" }
+  "完成：" { ok "确认后完成安装" }
+}
+expect eof
+
+# --- 方向键移动后取消：覆盖 ↓/j/k 与 q ---
+spawn $shell $script
+expect "选择安装范围"
+send "\033\[B"
+sleep 0.2
+send "k"
+sleep 0.2
+send "q"
+expect {
+  timeout { bad "q 未取消" }
+  "已取消" { ok "菜单中按 q 取消" }
+}
+expect eof
+
+# --- setup-skills.sh：范围菜单 + 仓库地址输入 + 取消 ---
+spawn $shell /workspace/setup-skills.sh
+expect {
+  timeout { bad "skills 未出现范围菜单"; exit 1 }
+  "选择安装范围" { ok "skills 出现范围菜单" }
+}
+send "\r"
+expect {
+  timeout { bad "skills 未询问仓库地址" }
+  "来源仓库地址" { ok "skills 询问仓库地址" }
+}
+send "\r"
+expect {
+  timeout { bad "skills 未进入软链阶段" }
+  "\[软链\]" { ok "留空仓库地址时只做软链" }
+}
+expect {
+  timeout { bad "skills 未出现确认提示" }
+  -re "执行以上.*计划？" { ok "skills 出现阶段确认提示" }
+}
+send "n\r"
+expect eof
+
+puts "\nPTY 通过 $pass，失败 $fail"
+exit [expr {$fail == 0 ? 0 : 1}]

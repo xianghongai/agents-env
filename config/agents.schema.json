@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/xianghongai/agents-env/main/config/agents.schema.json",
+  "title": "Agents Registry",
+  "description": "AI Agent 的 Instructions 与 Skills 约定，分两层：shared 是跨 Agent 的公共投放点（基准层），agents 是各家自己的落点（Agent 层）。脚本只执行此处声明的内容，不内置任何关于某个 Agent 支持何种机制的判断。新增 Agent 或调整约定只改本文件，不改脚本。",
+  "type": "object",
+  "required": [
+    "shared",
+    "agents"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema 引用路径。"
+    },
+    "shared": {
+      "$ref": "#/$defs/shared",
+      "description": "基准层：跨 Agent 的公共投放点。这里的每一项都对应一条已被多家 Agent 原生读取的公共约定（`.agents/*`），不是某一家的私有路径；私有路径一律声明在 agents 层。"
+    },
+    "agents": {
+      "type": "object",
+      "description": "Agent 层：各 AI Agent 的约定配置，以 Agent 标识符为键。键即标识符，对象内不再重复声明 id：编辑器折叠时键名可见，脚本也可直接索引。",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "description": "Agent 唯一标识符（kebab-case），用于命令行过滤（如 --agent claude-code）。"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/agent"
+      }
+    }
+  },
+  "$defs": {
+    "shared": {
+      "type": "object",
+      "required": [
+        "skills_root",
+        "mcp_root"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "instructions_root": {
+          "$ref": "#/$defs/scope_paths",
+          "description": "Instructions 共享约定文件相对于 Scope 根的路径。即各 Agent 指针文件所指向的规则正本（如 AGENTS.md 规范）。"
+        },
+        "skills_root": {
+          "$ref": "#/$defs/scope_paths",
+          "description": "共享 Skills 库相对于 Scope 根的路径。软链指向它，Skills 内容也搬运到它。"
+        },
+        "mcp_root": {
+          "$ref": "#/$defs/scope_paths",
+          "description": "MCP 共享约定文件相对于 Scope 根的路径。部分 Agent 原生读取它，可作为跨 Agent 的统一投放点。"
+        }
+      }
+    },
+    "declared_path": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "const": "standard"
+        },
+        {
+          "type": "string",
+          "pattern": "[./]"
+        }
+      ],
+      "description": "声明的落点路径，相对于 Scope 根。三种取值：\n- 真实相对路径：该 Agent 在此 Scope 的私有落点\n- standard: 该 Agent 原生读取基准层声明的标准位置（shared.*），无需单独投放\n- null: 未知。可能是厂商没提供该机制，也可能是本项目尚未查到出处，两者不做区分，脚本一律不动作\n真实路径必须含 . 或 /，因此不会与保留词 standard 歧义。"
+    },
+    "scope_paths": {
+      "type": "object",
+      "required": [
+        "user",
+        "project"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "references": {
+          "$ref": "#/$defs/references",
+          "description": "该共享约定的社区公共规范或官方文档地址（指导各 Agent 厂商对齐的公共规范）。"
+        },
+        "user": {
+          "type": "string",
+          "description": "相对于 $HOME 的路径。"
+        },
+        "project": {
+          "type": "string",
+          "description": "相对于仓库根的路径。"
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": [
+        "name",
+        "vendor",
+        "instructions",
+        "skills"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "展示名称，用于交互向导与输出报告。"
+        },
+        "vendor": {
+          "type": "string",
+          "description": "所属厂商或开发者组织。"
+        },
+        "references": {
+          "$ref": "#/$defs/references",
+          "description": "该 Agent 的综合官方文档、帮助中心或产品首页地址。脚本不读取，仅供查证与参考。"
+        },
+        "instructions": {
+          "$ref": "#/$defs/instructions"
+        },
+        "skills": {
+          "$ref": "#/$defs/skills"
+        },
+        "mcp": {
+          "$ref": "#/$defs/mcp"
+        }
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "references": {
+          "$ref": "#/$defs/references"
+        },
+        "scope": {
+          "type": "object",
+          "required": [
+            "user",
+            "project"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "user": {
+              "$ref": "#/$defs/instructions_path"
+            },
+            "project": {
+              "$ref": "#/$defs/instructions_path"
+            }
+          },
+          "description": "入口文件相对路径。"
+        },
+        "template_override": {
+          "$ref": "#/$defs/scope_template",
+          "description": "整份替换的模板，路径相对于仓库根。未声明即使用通用模板，脚本据此精确取用，不做文件探测。"
+        },
+        "template_frontmatter": {
+          "$ref": "#/$defs/scope_template",
+          "description": "仅前置的 YAML frontmatter，路径相对于仓库根，正文仍用通用模板。"
+        }
+      }
+    },
+    "instructions_path": {
+      "$ref": "#/$defs/declared_path",
+      "description": "入口文件相对路径，取值见 declared_path。"
+    },
+    "scope_template": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "user": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "references": {
+          "$ref": "#/$defs/references"
+        },
+        "scope": {
+          "type": "object",
+          "required": [
+            "user",
+            "project"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "user": {
+              "$ref": "#/$defs/skills_scope"
+            },
+            "project": {
+              "$ref": "#/$defs/skills_scope"
+            }
+          },
+          "description": "各 Scope 独立声明路径与模式。两级可以不同，协议不做收窄。"
+        }
+      }
+    },
+    "skills_scope": {
+      "type": "object",
+      "required": [
+        "path",
+        "mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/declared_path",
+          "description": "该 Agent 私有 Skills 目录相对路径，取值见 declared_path。mode 为 none 时仍建议登记真实路径：它是清理冗余软链的扫描点。standard 表示原生读取 shared.skills_root，无需软链。"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "link-dir",
+            "link-each",
+            "none"
+          ],
+          "description": "脚本动作：\n- link-dir: 把 path 整个软链到 shared.skills_root；若 path 已是含其它内容的实体目录，自动回退为 link-each\n- link-each: 在 path 下为 shared.skills_root 的每一项各建一条软链，可与该 Agent 自带的 Skills 共存\n- none: 不动作"
+        }
+      }
+    },
+    "references": {
+      "type": "object",
+      "properties": {
+        "docs": {
+          "$ref": "#/$defs/url_list",
+          "description": "官方文档、帮助中心或社区公共规范地址。"
+        },
+        "repository": {
+          "$ref": "#/$defs/url_list",
+          "description": "源码仓库地址。"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/url_list"
+      },
+      "description": "相关资料地址，按用途分键。docs 与 repository 是约定键，另有需要时可自行添加未在协议中声明的键（如 changelog、issue、blog），无需先改 schema。references 不参与任何脚本逻辑，纯粹供维护者查证出处，因此协议在这里刻意宽松：整个对象可以为空 {}，单个键也可以为空（空串、空数组或 null），不必为了通过校验而编造链接。"
+    },
+    "url_list": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "format": "uri"
+            }
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      ],
+      "description": "单条 URL、多条 URL 的数组，或表示「还没查到」的空值（空串 / 空数组 / null）。非空字符串仍须是 URL，避免把这里当成随手记备注的地方。"
+    },
+    "mcp": {
+      "type": "object",
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false,
+      "description": "MCP 配置的落点。当前只描述「配置在哪、什么格式、哪个键承载」，投放动作的语义待脚本实现时再定，因此暂不含 mode。",
+      "properties": {
+        "references": {
+          "$ref": "#/$defs/references"
+        },
+        "scope": {
+          "type": "object",
+          "required": [
+            "user",
+            "project"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "user": {
+              "$ref": "#/$defs/mcp_scope"
+            },
+            "project": {
+              "$ref": "#/$defs/mcp_scope"
+            }
+          }
+        }
+      }
+    },
+    "mcp_scope": {
+      "type": "object",
+      "required": [
+        "path",
+        "format",
+        "key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/declared_path",
+          "description": "配置文件相对于 Scope 根的路径，取值见 declared_path。仅由界面管理、无文件式配置的，同样记 null。"
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "json",
+            "toml",
+            "yaml",
+            "dir",
+            null
+          ],
+          "description": "配置文件格式。dir 表示该路径是目录，其下每个文件描述一个 Server。"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "承载 Server 定义的键路径，点号分隔，如 mcpServers 或 mcp.servers。format 为 dir 时为 null。"
+        }
+      }
+    }
+  }
+}
