@@ -211,7 +211,7 @@
         },
         "scope": {
           "user": {
-            "path": ".gemini/antigravity-cli/skills",
+            "path": ".gemini/config/skills",
             "mode": "link-each"
           },
           "project": {
