@@ -64,9 +64,25 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 
 提供**获取**（从远程仓库拉取到共享库）与**软链**（按注册表把共享库接到各 Agent）的能力。
 
-来源仓库的唯一约定是**根下有 `skills/` 目录**，其下每个目录为一个 Skill。
+来源仓库支持两种形态，按顺序判定，命中即停：
 
-获取是增量的：名字不同的新增，名字相同的默认跳过，`--force` 才替换。替换是整份替换而非合并，原件先移为 `<名称>.local.bak`，新版再完整落入。选这个后缀是因为常见 `.gitignore` 含 `*.local.*` 规则，项目级安装时不会混进 `git status`。
+1. **单 Skill**：仓库根下直接有 `SKILL.md`，整个仓库就是一个 Skill。
+2. **多 Skill**：`skills/<目录>/SKILL.md`，只取含 `SKILL.md` 的子目录，其它条目忽略。
+
+Skill 不在这两个位置时（分类嵌套的仓库，或项目代码里夹带 Skill 的仓库），用 `--path <子目录>` 指定识别位置：该目录下直接有 `SKILL.md` 就只取它一个，否则取其直接子目录中含 `SKILL.md` 的。`--path` 只接受仓库内的相对路径，解析到仓库之外时中止。
+
+`--skill <名称>` 可重复，只获取指定的 Skill。任何一个名称不存在都整体中止，不做部分安装。两者都只在命令行提供，交互向导不询问。
+
+```bash
+./setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
+  --path skills/.curated --skill alpha-skill --skill beta-skill
+```
+
+落地名称取 `SKILL.md` frontmatter 的 `name` 字段，缺省时用目录名（单 Skill 在仓库根时用仓库名）。`--skill` 按落地名称匹配。名称不合法或出现同名时，在任何落盘之前中止。
+
+获取是增量的：名字不同的新增，名字相同的默认跳过，`--force` 才替换。替换是整份替换而非合并，原件先移到共享库之外的 `<共享库>.local.bak/<名称>`，新版再完整落入。备份不放在共享库内：原生读取共享库或整目录软链的 Agent 会把它当成同名 Skill 读到。旧版留在库内的 `<名称>.local.bak` 会在软链阶段迁出。选 `.local.bak` 后缀是因为常见 `.gitignore` 含 `*.local.*` 规则，项目级安装时不会混进 `git status`。
+
+软链阶段同样只处理共享库中含 `SKILL.md` 的目录。
 
 软链形态由注册表中每个 Agent **各 Scope 独立声明**的 `mode` 决定：
 

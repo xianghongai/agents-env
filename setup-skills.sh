@@ -19,10 +19,15 @@ CR_CHAR="$(printf '\r')"
 LF_CHAR='
 '
 ESC_CHAR="$(printf '\033')"
+TAB_CHAR="$(printf '\t')"
 
 SCOPE=""
 REPO=""
 REPO_REF=""
+# 不叫 path：Zsh 中 path 是与 PATH 绑定的特殊数组。
+REPO_SUBPATH=""
+# 换行分隔的待装名称，可重复的参数逐个追加。
+SKILL_FILTER=""
 SOURCE_DIRECTORY=""
 TARGET_ROOT=""
 GITHUB_BRANCH="$DEFAULT_GITHUB_BRANCH"
@@ -33,6 +38,7 @@ CLONE_DIRECTORY=""
 RESOURCE_DIRECTORY=""
 RESOURCE_SOURCE_LABEL=""
 SKILLS_ROOT=""
+BACKUP_ROOT=""
 # 顶层捕获调用路径：Zsh 的 FUNCTION_ARGZERO 默认开启，函数内 $0 会变成函数名。
 SCRIPT_INVOCATION="$0"
 INTERACTIVE=false
@@ -58,21 +64,31 @@ print_usage() {
 
 选项：
       --scope <user|project>      安装范围
-  -r, --repo <repository_url>     来源仓库，任何 git 可克隆的地址；仓库根下须有 skills/
+  -r, --repo <repository_url>     来源仓库，任何 git 可克隆的地址
       --ref <branch|tag|commit>   取源的引用，默认仓库默认分支
+      --path <subdir>             只在来源仓库的该子目录识别 Skill；需配合 --repo
+      --skill <name>              只获取指定名称的 Skill，可重复；需配合 --repo
   -t, --target <dir>              Scope 根目录，默认 user 为 $HOME、project 为当前目录
-  -s, --source <dir>.             本仓库的本地检出，用于读取注册表；省略时按需下载
+  -s, --source <dir>              本仓库的本地检出，用于读取注册表；省略时按需下载
+      --branch <name>             省略 --source 时下载注册表所用的本仓库分支，默认 main
       --dry-run                   只展示计划，不产生任何持久化副作用
-  -f, --force                     替换同名 Skill、覆盖已有软链（原件备份为 .local.bak）
+  -f, --force                     替换同名 Skill、覆盖已有软链（原件备份到共享库之外）
   -h, --help                      显示本帮助并退出
 
 行为：
   不带任何参数时进入交互向导；出现任意参数即进入严格非交互模式。
 
-  获取：仓库 skills/ 下的条目增量搬运到共享库。名字不同的新增，
-        名字相同的默认跳过，--force 时替换并备份。
+  获取：识别来源仓库中的 Skill，增量搬运到共享库。
+        仓库根下有 SKILL.md 时，整个仓库视为一个 Skill；
+        否则取 skills/ 下含 SKILL.md 的子目录。
+        落地名称取 SKILL.md frontmatter 的 name 字段，缺省时用目录名。
+        名字不同的新增，名字相同的默认跳过；--force 时替换，
+        原件备份到 <共享库>.local.bak/<名称>，不放在共享库内以免被 Agent 读到。
+        --path 指定的目录下直接有 SKILL.md 时只取它一个，否则取其直接子目录中
+        含 SKILL.md 的；用于分类嵌套或非 Skills 专用的仓库。
+        --skill 按落地名称筛选，名称不存在时在落盘前报错。
 
-  软链：按注册表中每个 Agent 各 Scope 声明的 mode 处理。
+  软链：只处理共享库中含 SKILL.md 的目录，按注册表中每个 Agent 各 Scope 声明的 mode 处理。
         link-dir  整个目录软链到共享库；目标已是含其它内容的实体目录时
                   自动回退为 link-each，避免破坏该 Agent 自带的 Skills。
         link-each 为共享库中的每一项各建一条软链。
@@ -81,6 +97,8 @@ print_usage() {
 示例：
   setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
   setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
+  setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
+    --path skills/.curated --skill alpha-skill --skill beta-skill
   setup-skills.sh --scope user --force
 EOF
 }
@@ -156,6 +174,18 @@ parse_arguments() {
         REPO="$2"
         shift 2
         ;;
+      --path)
+        reject_duplicate "--path" "$REPO_SUBPATH"
+        require_value "--path" "${2:-}"
+        REPO_SUBPATH="$2"
+        shift 2
+        ;;
+      --skill)
+        require_value "--skill" "${2:-}"
+        SKILL_FILTER="${SKILL_FILTER}$2
+"
+        shift 2
+        ;;
       --ref)
         reject_duplicate "--ref" "$REPO_REF"
         require_value "--ref" "${2:-}"
@@ -201,7 +231,7 @@ open_interactive_terminal() {
   if ! { exec 3<>/dev/tty; } 2>/dev/null; then
     printf '当前环境没有可用的控制终端，无法进入交互模式。\n' >&2
     printf '请改用非交互调用，例如：\n' >&2
-    printf '  setup-instructions.sh --scope user\n' >&2
+    printf '  setup-skills.sh --scope user\n' >&2
     exit 1
   fi
   TTY_OPENED=true
@@ -390,8 +420,6 @@ run_single_choice_menu() {
   done
 }
 
-# 多选菜单。与单选共用按键与终端处理，另加空格勾选、a 全选、n 全清。
-# 勾选状态用换行分隔的 0/1 串承载，避免数组在 Bash 3.2 与 Zsh 下的下标差异。
 confirm_default_yes() {
   # $1 提示语
   if [ "$FORCE" = true ]; then
@@ -416,7 +444,7 @@ collect_interactive_scope() {
   open_interactive_terminal
   printf '获取 Skills 并按注册表声明为各 Agent 建立软链。\n' >&3
   run_single_choice_menu "选择安装范围" "user    当前用户（写入用户目录）
-project 当前项目（写入项目根目录）（写入仓库根目录）"
+project 当前项目（写入项目根目录）"
   case "$MENU_CURSOR" in
     0) SCOPE="user" ;;
     *) SCOPE="project" ;;
@@ -442,6 +470,28 @@ validate_scope() {
     "") fail "缺少 --scope。使用 --help 查看用法。" ;;
     *) fail "--scope 只能是 user 或 project，收到：${SCOPE}" ;;
   esac
+}
+
+# 只校验字面形态，目录是否存在要等克隆之后才知道。放在任何副作用之前。
+validate_repo_options() {
+  if [ -z "$REPO" ]; then
+    [ -z "$REPO_SUBPATH" ] || fail "--path 需要配合 --repo 使用。"
+    [ -z "$SKILL_FILTER" ] || fail "--skill 需要配合 --repo 使用。"
+    return 0
+  fi
+  [ -n "$REPO_SUBPATH" ] || return 0
+  # 前后各补一个斜杠，任意位置的 . 与 .. 段都能用同一组模式命中。
+  case "/${REPO_SUBPATH}/" in
+    //*) fail "--path 必须是仓库内的相对路径，收到：${REPO_SUBPATH}" ;;
+    */../* | */./*) fail "--path 不能包含 . 或 .. 段，收到：${REPO_SUBPATH}" ;;
+    *"$TAB_CHAR"*) fail "--path 不能包含制表符。" ;;
+  esac
+  while true; do
+    case "$REPO_SUBPATH" in
+      */) REPO_SUBPATH="${REPO_SUBPATH%/}" ;;
+      *) break ;;
+    esac
+  done
 }
 
 resolve_target_root() {
@@ -499,12 +549,11 @@ resolve_resources() {
     return 0
   fi
 
-  WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/setup-instructions.XXXXXX")" ||
+  WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/setup-skills.XXXXXX")" ||
     fail "无法创建临时目录。"
   RESOURCE_DIRECTORY="$WORK_DIRECTORY"
   RESOURCE_SOURCE_LABEL="GitHub ${GITHUB_REPOSITORY}@${GITHUB_BRANCH}"
   download_resource "config/agents.json" "${RESOURCE_DIRECTORY}/config/agents.json"
-  download_resource "templates/entry-${SCOPE}.md" "${RESOURCE_DIRECTORY}/templates/entry-${SCOPE}.md"
 }
 
 registry_file() {
@@ -521,6 +570,8 @@ validate_registry() {
   fi
   SKILLS_ROOT="$(jq -r --arg scope "$SCOPE" '.shared.skills_root[$scope] // ""' "$(registry_file)")"
   [ -n "$SKILLS_ROOT" ] || fail "注册表缺少 shared.skills_root.${SCOPE}。"
+  # 备份放在共享库的兄弟目录：放在库内会被原生读取共享库或整目录软链的 Agent 当成同名 Skill。
+  BACKUP_ROOT="${SKILLS_ROOT%/}.local.bak"
 }
 
 # $1 agent id，$2 jq 表达式（相对于该 agent 对象，$scope 可用）
@@ -553,11 +604,105 @@ clone_repository() {
     git clone --depth 1 -- "$REPO" "$CLONE_DIRECTORY" >/dev/null 2>&1 ||
       fail "克隆失败：${REPO}"
   fi
-  [ -d "${CLONE_DIRECTORY}/skills" ] ||
-    fail "来源仓库根下没有 skills/ 目录。本工具约定：仓库须提供 skills/，其下每个目录为一个 Skill。"
-  if [ -z "$(ls -A "${CLONE_DIRECTORY}/skills" 2>/dev/null)" ]; then
-    fail "来源仓库的 skills/ 为空。"
+  discover_skills
+}
+
+# $1 Skill 目录，$2 读不到 name 时的回退名。
+# 只读首个 frontmatter 块里的 name：规范要求 Skill 目录名与它一致，落地目录因此按它命名。
+skill_name_of() {
+  name_value="$(awk -v quote="'" '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    /^name:/ {
+      sub(/^name:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      gsub("^[\"" quote "]|[\"" quote "]$", "")
+      print
+      exit
+    }
+  ' "$1/SKILL.md" 2>/dev/null)" || name_value=""
+  printf '%s' "${name_value:-$2}"
+}
+
+# 起点目录识别两种形态，按顺序判定、命中即停：
+#   起点下直接有 SKILL.md：单 Skill，整个起点就是一个 Skill；
+#   否则起点是容器，只取其直接子目录中含 SKILL.md 的，其它条目忽略。
+# 起点默认是仓库根，容器默认是 skills/；指定 --path 时起点与容器都是该目录本身，
+# 这样分类嵌套（skills/<分类>/<名称>）和非 Skills 专用仓库都能精确指到。
+# 结果按「名称<TAB>仓库内相对路径」写入 discovered，计划与落盘共用这一份。
+discover_skills() {
+  discovered="${WORK_DIRECTORY}/discovered"
+  : >"$discovered"
+  scan_root="$CLONE_DIRECTORY"
+  # 记录的来源路径都相对于克隆根，落盘时直接拼接。
+  container_relpath="skills"
+  if [ -n "$REPO_SUBPATH" ]; then
+    scan_root="${CLONE_DIRECTORY}/${REPO_SUBPATH}"
+    container_relpath="$REPO_SUBPATH"
+    [ -d "$scan_root" ] || fail "来源仓库中不存在目录：${REPO_SUBPATH}"
+    # 仓库里的软链可能指向克隆之外，按物理路径确认仍在仓库内。
+    clone_physical="$(cd "$CLONE_DIRECTORY" && pwd -P)"
+    case "$(cd "$scan_root" && pwd -P)/" in
+      "${clone_physical}/"*) ;;
+      *) fail "--path 解析后位于来源仓库之外：${REPO_SUBPATH}" ;;
+    esac
   fi
+
+  if [ -f "${scan_root}/SKILL.md" ]; then
+    # 单 Skill 缺 name 时用起点目录名兜底；起点是仓库根时用仓库名，克隆目录名是临时的。
+    if [ -n "$REPO_SUBPATH" ]; then
+      fallback="$(basename "$REPO_SUBPATH")"
+      source_relpath="$REPO_SUBPATH"
+    else
+      fallback="$(basename "${REPO%/}")"
+      fallback="${fallback%.git}"
+      source_relpath="."
+    fi
+    printf '%s%s%s\n' "$(skill_name_of "$scan_root" "$fallback")" "$TAB_CHAR" "$source_relpath" >>"$discovered"
+  elif [ -d "${CLONE_DIRECTORY}/${container_relpath}" ]; then
+    find "${CLONE_DIRECTORY}/${container_relpath}" -mindepth 1 -maxdepth 1 -type d >"${WORK_DIRECTORY}/candidates" 2>/dev/null || true
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      [ -f "${item}/SKILL.md" ] || continue
+      dir_name="$(basename "$item")"
+      printf '%s%s%s/%s\n' "$(skill_name_of "$item" "$dir_name")" "$TAB_CHAR" "$container_relpath" "$dir_name" >>"$discovered"
+    done <"${WORK_DIRECTORY}/candidates"
+  fi
+
+  if [ ! -s "$discovered" ]; then
+    if [ -n "$REPO_SUBPATH" ]; then
+      fail "${REPO_SUBPATH} 下没有找到 Skill：它自身没有 SKILL.md，直接子目录中也没有含 SKILL.md 的。"
+    fi
+    fail "来源仓库中没有找到 Skill。可识别的形态：根下直接有 SKILL.md（单 Skill），或 skills/<名称>/SKILL.md（多 Skill）；其它位置用 --path 指定。"
+  fi
+
+  # 名称会成为共享库里的目录名并写进计划行，校验必须在任何落盘之前完成。
+  while IFS="$TAB_CHAR" read -r name source_relpath; do
+    case "$name" in
+      "" | .* | *[!A-Za-z0-9._-]* | *.local.bak)
+        fail "Skill 名称不合法：「${name}」（来源 ${source_relpath}）。名称只能含字母、数字、点、下划线和连字符，且不以点开头。"
+        ;;
+    esac
+  done <"$discovered"
+  duplicated="$(cut -f1 "$discovered" | sort | uniq -d | tr '\n' ' ')"
+  [ -z "$duplicated" ] || fail "来源仓库中存在同名 Skill：${duplicated}"
+
+  filter_skills
+}
+
+# --skill 按落地名称筛选。任何一个名称找不到都整体中止，不做部分安装。
+filter_skills() {
+  [ -n "$SKILL_FILTER" ] || return 0
+  printf '%s' "$SKILL_FILTER" | sort -u >"${WORK_DIRECTORY}/wanted"
+  missing="$(awk -F "$TAB_CHAR" 'NR == FNR { have[$1] = 1; next } !($1 in have)' \
+    "$discovered" "${WORK_DIRECTORY}/wanted" | tr '\n' ' ')"
+  if [ -n "$missing" ]; then
+    fail "来源中没有这些 Skill：${missing}。可选名称：$(cut -f1 "$discovered" | sort | tr '\n' ' ')"
+  fi
+  awk -F "$TAB_CHAR" 'NR == FNR { keep[$1] = 1; next } $1 in keep' \
+    "${WORK_DIRECTORY}/wanted" "$discovered" >"${discovered}.filtered"
+  mv "${discovered}.filtered" "$discovered"
 }
 
 add_plan() {
@@ -565,34 +710,53 @@ add_plan() {
 "
 }
 
-# 获取阶段：仓库 skills/ 下的顶层条目增量进共享库
+# 获取阶段：识别出的 Skill 增量进共享库
 plan_fetch() {
   [ -n "$REPO" ] || return 0
   dest_root="${TARGET_ROOT}/${SKILLS_ROOT}"
-  find "${CLONE_DIRECTORY}/skills" -mindepth 1 -maxdepth 1 >"${WORK_DIRECTORY}/incoming" 2>/dev/null || true
-  while IFS= read -r item; do
-    [ -n "$item" ] || continue
-    name="$(basename "$item")"
+  while IFS="$TAB_CHAR" read -r name source_relpath; do
+    [ -n "$name" ] || continue
     if [ ! -e "${dest_root}/${name}" ]; then
       add_plan "fetch-new" "$name" "${SKILLS_ROOT}/${name}" "新增"
     elif [ "$FORCE" = true ]; then
-      add_plan "fetch-replace" "$name" "${SKILLS_ROOT}/${name}" "同名替换，原件备份为 .local.bak"
+      add_plan "fetch-replace" "$name" "${SKILLS_ROOT}/${name}" "同名替换，原件备份到 ${BACKUP_ROOT}/${name}"
     else
       add_plan "fetch-skip" "$name" "${SKILLS_ROOT}/${name}" "同名已存在，--force 才替换"
     fi
-  done <"${WORK_DIRECTORY}/incoming"
+  done <"${WORK_DIRECTORY}/discovered"
 }
 
-# 共享库当前的真实条目。软链阶段在获取阶段落盘之后才计算，
+# 共享库当前的真实 Skill。软链阶段在获取阶段落盘之后才计算，
 # 因此这里读到的就是最终内容，不需要预测另一阶段的结果。
+# 只认含 SKILL.md 的目录：库里的说明文件、杂项目录不是 Skill，不该接给 Agent。
 shared_skill_names() {
   dest_root="${TARGET_ROOT}/${SKILLS_ROOT}"
   [ -d "$dest_root" ] || return 0
   find "$dest_root" -mindepth 1 -maxdepth 1 2>/dev/null >"${WORK_DIRECTORY}/names.raw" || true
   while IFS= read -r item; do
     [ -n "$item" ] || continue
+    [ -f "${item}/SKILL.md" ] || continue
     basename "$item"
   done <"${WORK_DIRECTORY}/names.raw" | sort -u
+}
+
+# 旧版把备份放在共享库内（<名称>.local.bak），会被 Agent 当成同名 Skill 读到。
+# 这里把它们迁到共享库之外；新位置已有同名备份时不覆盖，留给人工处理。
+plan_legacy_backups() {
+  dest_root="${TARGET_ROOT}/${SKILLS_ROOT}"
+  [ -d "$dest_root" ] || return 0
+  find "$dest_root" -mindepth 1 -maxdepth 1 -name '*.local.bak' >"${WORK_DIRECTORY}/legacy" 2>/dev/null || true
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    [ -L "$item" ] && continue
+    name="$(basename "$item")"
+    name="${name%.local.bak}"
+    if [ -e "${TARGET_ROOT}/${BACKUP_ROOT}/${name}" ]; then
+      add_plan "blocked-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" "${BACKUP_ROOT}/${name} 已存在，请手动处理"
+    else
+      add_plan "move-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" "移到 ${BACKUP_ROOT}/${name}"
+    fi
+  done <"${WORK_DIRECTORY}/legacy"
 }
 
 # 目录中是否存在「不是指向共享库的软链」的内容：有则整目录软链会破坏它们
@@ -617,7 +781,7 @@ plan_link_each() {
   shared_skill_names >"${WORK_DIRECTORY}/shared"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    # 备份件不参与软链。
+    # 旧版留在库内的备份件不参与软链。
     case "$name" in *.local.bak) continue ;; esac
     link_path="${link_root}/${name}"
     # 深度按软链自身的路径算：它位于 <dir>/<name>，比 <dir> 深一层。
@@ -637,6 +801,7 @@ plan_link_each() {
 }
 
 plan_link() {
+  plan_legacy_backups
   selected_agent_ids >"${WORK_DIRECTORY}/ids"
   while IFS= read -r agent_id; do
     [ -n "$agent_id" ] || continue
@@ -701,7 +866,7 @@ print_context() {
   info "注册表：${RESOURCE_SOURCE_LABEL}    共享库：${SKILLS_ROOT}"
   # 不能写成 [ -n ... ] && info ...：条件为假时函数以非零状态返回，会被 set -e 杀掉。
   if [ -n "$REPO" ]; then
-    info "来源仓库：${REPO}${REPO_REF:+ @${REPO_REF}}"
+    info "来源仓库：${REPO}${REPO_REF:+ @${REPO_REF}}${REPO_SUBPATH:+    子目录：${REPO_SUBPATH}}"
   fi
 }
 
@@ -726,10 +891,21 @@ apply_plan() {
         # 落入前目标必须不存在：cp -R 到已存在的目录会拷进其内部形成合并，
         # 那样旧版残留的文件会与新版混在一起，且没有任何提示。
         if [ -e "$target" ]; then
-          rm -rf "${target}.local.bak"
-          mv "$target" "${target}.local.bak"
+          backup="${TARGET_ROOT}/${BACKUP_ROOT}/${name}"
+          mkdir -p "${TARGET_ROOT}/${BACKUP_ROOT}"
+          rm -rf "$backup"
+          mv "$target" "$backup"
         fi
-        cp -R "${CLONE_DIRECTORY}/skills/${name}" "$target"
+        source_relpath="$(awk -F "$TAB_CHAR" -v want="$name" '$1 == want { print $2; exit }' "${WORK_DIRECTORY}/discovered")"
+        # 复制「目录/.」而不是目录本身：来源若是仓库内的软链，复制的是它指向的内容而非链接。
+        cp -R "${CLONE_DIRECTORY}/${source_relpath}/." "$target"
+        # 单 Skill 仓库整份复制时会带上克隆的版本库元数据，它不属于 Skill。
+        rm -rf "${target}/.git"
+        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        ;;
+      move-bak)
+        mkdir -p "${TARGET_ROOT}/${BACKUP_ROOT}"
+        mv "$target" "${TARGET_ROOT}/${BACKUP_ROOT}/${name}"
         APPLIED_COUNT=$((APPLIED_COUNT + 1))
         ;;
       link-dir | relink-dir)
@@ -789,6 +965,7 @@ main() {
     collect_interactive_scope
   fi
   validate_scope
+  validate_repo_options
   resolve_target_root
   resolve_resources
   validate_registry
