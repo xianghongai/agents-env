@@ -114,11 +114,12 @@ grep -q 'local edit' "$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" && ok "--yes 
 [ ! -e "$H/${SKILLS_BACKUP_USER}/alpha-skill" ] && ok "未替换时不产生备份" || bad "未替换却产生了备份"
 
 HY="$(fresh_home)"
-if run_no_tty --scope user --source "$WORKSPACE" --target "$HY" --repo "$REPO" >/dev/null 2>&1; then
+if out="$(run_no_tty --scope user --source "$WORKSPACE" --target "$HY" --repo "$REPO" 2>&1)"; then
   bad "无终端且未带 --yes 时应失败"
 else
   ok "无终端且未带 --yes 时非零退出"
 fi
+printf '%s' "$out" | grep -q -- '--yes' && ok "报错提示追加 --yes" || bad "报错未提示 --yes"
 [ ! -e "$HY/${SKILLS_ROOT_USER}/alpha-skill" ] && ok "确认失败时不落盘" || bad "确认失败仍然落盘"
 run --scope user --source "$WORKSPACE" --target "$H" --repo "$REPO" --force >/dev/null 2>&1
 grep -q 'alpha v1' "$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" && ok "--force 替换同名" || bad "--force 未替换"

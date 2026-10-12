@@ -187,9 +187,14 @@ open_interactive_terminal() {
     return 0
   fi
   if ! { exec 3<>/dev/tty; } 2>/dev/null; then
-    printf '当前环境没有可用的控制终端，无法进入交互模式。\n' >&2
-    printf '请改用非交互调用，例如：\n' >&2
-    printf '  setup-instructions.sh --scope user\n' >&2
+    # 非交互模式走到这里只可能是执行确认，引导用户跳过确认而不是改用非交互调用。
+    if [ "$INTERACTIVE" = true ]; then
+      printf '当前环境没有可用的控制终端，无法进入交互模式。\n' >&2
+      printf '请改用非交互调用，例如：\n' >&2
+      printf '  setup-instructions.sh --scope user\n' >&2
+    else
+      printf '当前环境没有可用的控制终端，无法确认执行计划。请追加 --force 跳过确认。\n' >&2
+    fi
     exit 1
   fi
   TTY_OPENED=true

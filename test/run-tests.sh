@@ -174,11 +174,12 @@ head_ "执行确认"
 H3="$(fresh_home)"
 probe_yes="$(entry_paths user | head -1)"
 # 容器内没有控制终端：不带 --force 必须在确认处失败，且不留任何写入。
-if run_no_tty --scope user --source "$WORKSPACE" --target "$H3" >/dev/null 2>&1; then
+if out="$(run_no_tty --scope user --source "$WORKSPACE" --target "$H3" 2>&1)"; then
   bad "无终端且未带 --force 时应失败"
 else
   ok "无终端且未带 --force 时非零退出"
 fi
+printf '%s' "$out" | grep -q -- '--force' && ok "报错提示追加 --force" || bad "报错未提示 --force"
 [ ! -e "$H3/$probe_yes" ] && ok "确认失败时不落盘" || bad "确认失败仍然落盘"
 run_no_tty --scope user --source "$WORKSPACE" --target "$H3" --force >/dev/null 2>&1
 [ -f "$H3/$probe_yes" ] && ok "--force 跳过确认" || bad "--force 未跳过确认"
