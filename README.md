@@ -1,154 +1,194 @@
 # agents-env
 
-统一管理各 AI Agent 的 **Instructions**（常驻指令入口）与 **Skills**（按需加载的能力），支持**用户级**与**项目级**两种范围。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-各 Agent 的路径与接入方式全部声明在 `config/agents.json`，脚本只按声明执行，不内置任何「谁支持什么」的判断。新增 Agent 或调整约定只改注册表，不改脚本。具体怎么改见 [注册表维护指南](config/README.md)。
+One set of Skills and one set of Instructions, wired into every AI agent.
 
-| 维度          | 用户级（`--scope user`）  | 项目级（`--scope project`） |
-| ------------- | ------------------------- | --------------------------- |
-| 根目录        | `$HOME`                   | 仓库根（默认当前目录）      |
-| Instructions  | 各 Agent 的用户级入口文件 | 各 Agent 的项目级入口文件   |
-| Skills 共享库 | `~/.agents/skills/`       | `<仓库>/.agents/skills/`    |
-
-## 快速开始
-
-不带参数即进入交互向导，方向键移动、回车确认、`q` 取消：
-
-```bash
-# Instructions
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" | bash
-
-# Skills
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | bash
-```
+agents-env treats `.agents/skills/` and `AGENTS.md` as the single source of truth and connects them to each agent's private paths as declared in a registry: Skills through relative symlinks, Instructions through entry files that point back to the source. It works at both user scope and project scope.
 
 ---
 
-## Instructions
+## Why
 
-为各 Agent 写入指向真实规则来源的入口文件。入口文件内容由 `templates/` 渲染，同一 Scope 下各 Agent 完全一致，不为任何一家开分支。
+Every agent you run has its own conventions: Skills go under `.<agent>/skills/`, rules go into `<AGENT>.md` or `.<agent>/rules/<entry-file>`. Maintaining this by hand breaks down quickly:
 
-已存在且内容不同的入口文件会先备份为 `<文件名>.local.bak` 再覆盖；内容一致则跳过。
+- **Copies drift apart**: the same Skill copied into N directories, updated in one and forgotten in the rest.
+- **A quick `ln -s` causes damage**: a whole-directory link hides the agent's built-in system Skills, and absolute links break as soon as a directory moves or you switch machines.
+- **Backups leak into git**: `.bak` files left behind by project-level overwrites show up in `git status` and get committed by accident.
+- **Every new tool means starting over**: each additional agent means looking up where it reads from and hand-writing the links again.
 
-### 用户级
+agents-env records where each agent reads from, and how to connect it, in the registry `config/agents.json`. The scripts only carry out what the registry declares:
 
-```bash
-# 交互式：选范围后勾选要安装的 Agent
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" | bash
+```text
+~/.agents/skills/                    ← single source
+├── alpha-skill/
+└── beta-skill/
 
-# 非交互式
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
-  | bash -s -- --scope user --force
+~/.<agent>/skills/
+├── alpha-skill -> ../../.agents/skills/alpha-skill   ← relative symlink
+├── beta-skill  -> ../../.agents/skills/beta-skill
+└── <built-in skill>/                                 ← real directory, left untouched
 ```
 
-按注册表为各 Agent 声明的用户级路径写入，形如 `~/.<agent>/<入口文件>`。**不检测 Agent 是否已安装**，可以先把环境铺好，之后再装 Agent。
+## Key features
 
-### 项目级
+- 🛡️ **Never overwrites real directories**: a real directory with the same name in an agent's folder is skipped and reported, never replaced. All validation runs before anything is written, so a failure leaves no partial result.
+- ↩️ **Reversible changes**: when `--force` replaces a Skill, the original moves to `<store>.local.bak/`, outside the shared store. An entry file with different content is first backed up as `<file>.local.bak`. The suffix matches the `*.local.*` rule found in common `.gitignore` files, so backups stay out of `git status`.
+- 🔗 **Relative symlinks**: links keep working after the whole tree is moved.
+- 📜 **Fully declarative**: agent paths and link modes live only in the registry, and the scripts contain no vendor-specific branches. Adding an agent means editing the registry only; see the [registry guide](config/README.md).
+- ⚡ **Lightweight**: single-file shell scripts, compatible with Bash 3.2+ and Zsh, runnable straight from `curl | bash`, no Node.js or Python. They require `jq`; fetching Skills also needs `git`; piped runs need `curl` or `wget`.
+
+## Scopes
+
+| | User `--scope user` | Project `--scope project` |
+| :--- | :--- | :--- |
+| Root | `$HOME` | Repository root (current directory by default, or `--target`) |
+| Shared Skills store | `~/.agents/skills/` | `<repo>/.agents/skills/` |
+| Instructions entry | e.g. `~/.<agent>/<entry-file>` | e.g. `<AGENT>.md` or `.<agent>/rules/<entry-file>` |
+| Link mode | Declared per agent in the registry | Declared per agent in the registry |
+
+The store location comes from `shared.skills_root` in the registry; the scripts don't assume it.
+
+---
+
+## Quick start
+
+Run either script with no arguments to start the interactive wizard (arrow keys to move, Enter to confirm, `q` to quit).
+
+Manage Skills:
 
 ```bash
-cd /path/to/repo
-
-# 交互式
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" | bash
-
-# 非交互式
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
-  | bash -s -- --scope project --force
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | bash
 ```
 
-按注册表为各 Agent 声明的项目级路径写入，有的落在仓库根（形如 `<AGENT>.md`），有的落在规则目录（形如 `.<agent>/rules/<入口文件>`）。少数 Agent 的入口需要 YAML frontmatter 或整份不同的正文，由注册表声明对应模板。
+Manage Instructions:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" | bash
+```
+
+Both scripts print the full plan first and only act after you confirm.
 
 ---
 
 ## Skills
 
-提供**获取**（从远程仓库拉取到共享库）与**软链**（按注册表把共享库接到各 Agent）的能力。
+`setup-skills.sh` does two things. **Fetch** pulls the Skills from a source repository into the shared store, incrementally. **Link** connects the store to each agent as declared in the registry. Without `--repo`, it only links.
 
-来源仓库支持两种形态，按顺序判定，命中即停：
+Passing any argument switches to non-interactive mode. The script still asks for confirmation once before acting; `--yes` skips the prompt. Same-named Skills already in the store are kept unless you pass `--force`, which replaces them (and implies `--yes`).
 
-1. **单 Skill**：仓库根下直接有 `SKILL.md`，整个仓库就是一个 Skill。
-2. **多 Skill**：`skills/<目录>/SKILL.md`，只取含 `SKILL.md` 的子目录，其它条目忽略。
-
-Skill 不在这两个位置时（分类嵌套的仓库，或项目代码里夹带 Skill 的仓库），用 `--path <子目录>` 指定识别位置：该目录下直接有 `SKILL.md` 就只取它一个，否则取其直接子目录中含 `SKILL.md` 的。`--path` 只接受仓库内的相对路径，解析到仓库之外时中止。
-
-`--skill <名称>` 可重复，只获取指定的 Skill。任何一个名称不存在都整体中止，不做部分安装。两者都只在命令行提供，交互向导不询问。
+Fetch into the user store and link:
 
 ```bash
-./setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
-  --path skills/.curated --skill alpha-skill --skill beta-skill
-```
-
-落地名称取 `SKILL.md` frontmatter 的 `name` 字段，缺省时用目录名（单 Skill 在仓库根时用仓库名）。`--skill` 按落地名称匹配。名称不合法或出现同名时，在任何落盘之前中止。
-
-获取是增量的：名字不同的新增，名字相同的默认跳过，`--force` 才替换。替换是整份替换而非合并，原件先移到共享库之外的 `<共享库>.local.bak/<名称>`，新版再完整落入。备份不放在共享库内：原生读取共享库或整目录软链的 Agent 会把它当成同名 Skill 读到。旧版留在库内的 `<名称>.local.bak` 会在软链阶段迁出。选 `.local.bak` 后缀是因为常见 `.gitignore` 含 `*.local.*` 规则，项目级安装时不会混进 `git status`。
-
-软链阶段同样只处理共享库中含 `SKILL.md` 的目录。
-
-软链形态由注册表中每个 Agent **各 Scope 独立声明**的 `mode` 决定：
-
-| mode        | 动作                                                                                               |
-| ----------- | -------------------------------------------------------------------------------------------------- |
-| `link-dir`  | 整个目录软链到共享库；目标已是含其它内容的实体目录时自动回退为逐项，避免破坏该 Agent 自带的 Skills |
-| `link-each` | 为共享库中的每一项各建一条软链，可与该 Agent 自带的 Skills 共存                                    |
-| `none`      | 不动作，并清理该目录下指向共享库的冗余软链                                                         |
-
-软链一律使用相对路径，目标整体移动后依然有效。共享库位置由注册表的 `shared.skills_root` 声明，不是脚本里的假定。
-
-### 用户级
-
-```bash
-# 交互式：选范围后输入仓库地址，留空则跳过获取、只做软链
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | bash
-
-# 非交互式
 curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" \
-  | bash -s -- --scope user --repo https://github.com/someone/my-skills.git --force
+  | bash -s -- --scope user --repo https://github.com/someone/my-skills.git
 ```
 
-用户级的 Agent 目录常已有其自带的 Skills，因此注册表中多声明为 `link-each`，逐项接入、互不覆盖。
-
-### 项目级
+Fetch into the current repository's `.agents/skills/` and link (`cd` into the target repository first):
 
 ```bash
-cd /path/to/repo
-
-# 交互式
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | bash
-
-# 非交互式
 curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" \
-  | bash -s -- --scope project --repo https://github.com/someone/my-skills.git --force
+  | bash -s -- --scope project --repo https://github.com/someone/my-skills.git
 ```
 
-项目级的 Agent 目录通常由本工具独占，可用 `link-dir` 整目录接入；一旦目录里有其它内容，脚本会自动回退为逐项。
+Rebuild links from the registry without fetching:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" \
+  | bash -s -- --scope user
+```
+
+### Link modes
+
+The registry declares a `mode` for each agent, separately for each scope:
+
+| mode | Behavior |
+| :--- | :--- |
+| `link-dir` | Links the whole directory to the store. If the target is already a real directory with other content, falls back to `link-each` so the agent's built-in Skills stay intact |
+| `link-each` | Creates one symlink per Skill in the store, alongside the agent's own Skills |
+| `none` | Creates no links, and removes stale symlinks in that directory that point into the store (symlinks only, never directories) |
+
+<details>
+<summary><strong>Source detection and filtering (<code>--path</code> / <code>--skill</code> / <code>--ref</code>)</strong></summary>
+
+<br>
+
+The source repository is checked in this order, stopping at the first match:
+
+1. **Single Skill**: a `SKILL.md` at the repository root means the whole repository is one Skill.
+2. **Multiple Skills**: every subdirectory of `skills/` that contains a `SKILL.md`; other entries are ignored.
+
+When Skills live elsewhere (for example, a repository nested by category, or a code project that ships Skills alongside its code), use `--path <subdir>` to set where to look. If that directory has a `SKILL.md` directly, only it is taken; otherwise its immediate subdirectories that contain a `SKILL.md` are taken. `--path` only accepts a relative path inside the repository.
+
+`--skill <name>` can be repeated to fetch only the named Skills. If any name is not found, the whole run aborts; nothing is partially installed. `--ref` selects a branch, tag or commit and defaults to the repository's default branch. These three options are command-line only; the wizard doesn't ask for them.
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" \
+  | bash -s -- --scope user --repo https://github.com/someone/mixed-repo.git \
+    --path skills/.curated --skill alpha-skill --skill beta-skill
+```
+
+A Skill's installed name is the `name` field in its `SKILL.md` frontmatter. Without it, the directory name is used, or the repository name for a single-Skill repository. `--skill` matches against the installed name. Invalid or duplicate names abort the run before anything is written.
+
+</details>
+
+<details>
+<summary><strong>Incremental updates and backups</strong></summary>
+
+<br>
+
+- Skills with new names are added; same-named Skills are skipped by default and replaced only with `--force`.
+- Replacement swaps the whole Skill; nothing is merged. The original first moves to `<store>.local.bak/<name>`, outside the store, and then the new version is copied in.
+- Backups stay outside the store because agents that read the store natively, or link to it as a whole directory, would otherwise load a backup as a duplicate Skill. Legacy `<name>.local.bak` backups left inside the store by older versions are moved out during linking.
+- Linking only considers directories in the store that contain a `SKILL.md`. Symlinks pointing to the wrong place are re-pointed; same-named real directories are skipped and reported.
+
+</details>
 
 ---
 
-## 本地运行
+## Instructions
 
-克隆本仓库后可不联网运行，`--source` 指向检出目录：
+`setup-instructions.sh` writes an entry file for each agent that points to `AGENTS.md`. Entry content is rendered from `templates/`. A few agents need frontmatter or an entirely different body; the registry declares the template variant for them. Agents that read `AGENTS.md` natively need no entry file, and none is written for them.
+
+- An entry file with identical content is skipped; one with different content is backed up as `<file>.local.bak` before being overwritten.
+- The script doesn't check whether an agent is installed, so you can set up entries first and install the agent later.
+- In non-interactive mode the script still asks for confirmation once before acting; `--force` skips the prompt.
+
+User scope:
 
 ```bash
-./setup-instructions.sh --scope project --source . --target /path/to/repo --dry-run
-./setup-skills.sh --scope user --source . --repo /path/to/local/skills-repo
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
+  | bash -s -- --scope user
 ```
 
-脚本位于检出目录中时会自动识别，`--source` 可省略。任何改动前都可以先用 `--dry-run` 看计划。完整选项见 `--help`。
+Project scope (`cd` into the target repository first):
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
+  | bash -s -- --scope project
+```
+
+Limit the run to some agents with a comma-separated list of registry agent IDs:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
+  | bash -s -- --scope project --agent <agent-id>,<agent-id>
+```
 
 ---
 
-## 结构
+## Repository layout
 
-| 路径                        | 职责                                      |
-| --------------------------- | ----------------------------------------- |
-| `setup-instructions.sh`     | Instructions 入口文件，自包含，可管道执行 |
-| `setup-skills.sh`           | Skills 获取与软链，自包含，可管道执行     |
-| `config/agents.json`        | Agent 注册表                              |
-| `config/agents.schema.json` | 注册表的数据协议                          |
-| [`config/README.md`](config/README.md)       | 注册表与协议的维护指南                    |
-| `templates/`                | 入口文件正文与少数 Agent 的变体片段       |
-| [`templates/README.md`](templates/README.md) | 入口模板的维护指南                        |
-| `test/`                     | 测试脚本与自包含的容器配置                |
+| Path | Description |
+| :--- | :--- |
+| `setup-skills.sh` | Skills fetch and link (self-contained, pipe-friendly) |
+| `setup-instructions.sh` | Instructions entry files (self-contained, pipe-friendly) |
+| `config/agents.json` | Agent registry: paths and link modes for each agent |
+| `config/agents.schema.json` | Data schema for the registry |
+| [`config/README.md`](config/README.md) | Registry and schema maintenance guide |
+| `templates/` | Entry file body and per-agent variant fragments |
+| [`templates/README.md`](templates/README.md) | Entry template maintenance guide |
+| `test/` | Test scripts and self-contained container setup |
 
 ---
 

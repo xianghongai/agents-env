@@ -33,6 +33,7 @@ TARGET_ROOT=""
 GITHUB_BRANCH="$DEFAULT_GITHUB_BRANCH"
 DRY_RUN=false
 FORCE=false
+ASSUME_YES=false
 WORK_DIRECTORY=""
 CLONE_DIRECTORY=""
 RESOURCE_DIRECTORY=""
@@ -72,7 +73,8 @@ print_usage() {
   -s, --source <dir>              本仓库的本地检出，用于读取注册表；省略时按需下载
       --branch <name>             省略 --source 时下载注册表所用的本仓库分支，默认 main
       --dry-run                   只展示计划，不产生任何持久化副作用
-  -f, --force                     替换同名 Skill、覆盖已有软链（原件备份到共享库之外）
+  -y, --yes                       跳过执行前的确认；无终端的环境（如 CI）必须提供
+  -f, --force                     替换同名 Skill（原件备份到共享库之外），隐含 --yes
   -h, --help                      显示本帮助并退出
 
 行为：
@@ -201,8 +203,13 @@ parse_arguments() {
         DRY_RUN=true
         shift
         ;;
+      -y | --yes)
+        ASSUME_YES=true
+        shift
+        ;;
       -f | --force)
         FORCE=true
+        ASSUME_YES=true
         shift
         ;;
       -h | --help)
@@ -422,7 +429,7 @@ run_single_choice_menu() {
 
 confirm_default_yes() {
   # $1 提示语
-  if [ "$FORCE" = true ]; then
+  if [ "$ASSUME_YES" = true ]; then
     return 0
   fi
   open_interactive_terminal

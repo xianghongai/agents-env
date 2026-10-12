@@ -62,20 +62,20 @@ print_usage() {
   -a, --agent <agent_id>      逗号分隔的 Agent id，限定处理范围
       --branch <name>         从 GitHub 取源时的分支，默认 main
       --dry-run               只展示计划，不产生任何持久化副作用
-  -f, --force                 跳过覆盖确认
+  -f, --force                 跳过执行前的确认；无终端的环境（如 CI）必须提供
   -h, --help                  显示本帮助并退出
 
 行为：
   不带任何参数时进入交互向导；出现任意参数即进入严格非交互模式，
   缺少必填项直接失败，不会补问。
 
-  user    只处理目录已存在的 Agent，不为未安装的工具创建目录。
-  project 默认安装注册表中全部 Agent，可用 --agent 收窄。
+  默认处理注册表中的全部 Agent，可用 --agent 收窄。
+  不检测 Agent 是否已安装，入口所在目录不存在时一并创建。
 
 示例：
   setup-instructions.sh --scope user
   setup-instructions.sh --scope project --target ./my-repo --dry-run
-  setup-instructions.sh --scope user --agent claude-code,codex --force
+  setup-instructions.sh --scope user --agent <agent-id>,<agent-id> --force
 EOF
 }
 

@@ -17,6 +17,9 @@ ok() { PASS=$((PASS + 1)); printf '  [ok]   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  [FAIL] %s\n' "$1"; }
 head_() { printf '\n== %s (%s) ==\n' "$1" "$SHELL_BIN"; }
 run() { "$SHELL_BIN" "$SCRIPT_UNDER_TEST" "$@"; }
+# 脱离控制终端运行：docker compose run 默认分配 TTY，确认逻辑的测试不能依赖调用方式。
+run_no_tty() { setsid "$SHELL_BIN" "$SCRIPT_UNDER_TEST" "$@" </dev/null; }
+command -v setsid >/dev/null 2>&1 || { printf '前提不满足：测试环境缺少 setsid。\n' >&2; exit 1; }
 
 # 断言只描述机制，期望值一律从注册表现场推导：共享库路径取自基准层，
 # 被测目录按「声明了哪种 mode」挑选，而不是写死某个厂商。清单增删不影响本文件。
@@ -101,8 +104,22 @@ run --scope user --source "$WORKSPACE" --target "$H" --repo "$REPO" --force >/de
 
 head_ "同名默认跳过，--force 才替换"
 printf 'local edit\n' >"$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md"
-run --scope user --source "$WORKSPACE" --target "$H" --repo "$REPO" >/dev/null 2>&1
-grep -q 'local edit' "$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" && ok "默认不覆盖同名" || bad "默认覆盖了同名"
+# 容器内没有控制终端，不带 --yes 会停在确认处；只看文件未变会假通过，所以先确认流程走完了。
+if run_no_tty --scope user --source "$WORKSPACE" --target "$H" --repo "$REPO" --yes >/dev/null 2>&1; then
+  ok "--yes 无终端也能执行完毕"
+else
+  bad "--yes 未能跳过确认"
+fi
+grep -q 'local edit' "$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" && ok "--yes 不替换同名" || bad "--yes 替换了同名"
+[ ! -e "$H/${SKILLS_BACKUP_USER}/alpha-skill" ] && ok "未替换时不产生备份" || bad "未替换却产生了备份"
+
+HY="$(fresh_home)"
+if run_no_tty --scope user --source "$WORKSPACE" --target "$HY" --repo "$REPO" >/dev/null 2>&1; then
+  bad "无终端且未带 --yes 时应失败"
+else
+  ok "无终端且未带 --yes 时非零退出"
+fi
+[ ! -e "$HY/${SKILLS_ROOT_USER}/alpha-skill" ] && ok "确认失败时不落盘" || bad "确认失败仍然落盘"
 run --scope user --source "$WORKSPACE" --target "$H" --repo "$REPO" --force >/dev/null 2>&1
 grep -q 'alpha v1' "$H/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" && ok "--force 替换同名" || bad "--force 未替换"
 [ -f "$H/${SKILLS_BACKUP_USER}/alpha-skill/SKILL.md" ] && ok "替换前备份到共享库之外" || bad "未备份原件"

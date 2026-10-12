@@ -18,6 +18,9 @@ bad() { FAIL=$((FAIL + 1)); printf '  [FAIL] %s\n' "$1"; }
 skip() { printf '  [skip] %s\n' "$1"; }
 head_() { printf '\n== %s (%s) ==\n' "$1" "$SHELL_BIN"; }
 run() { "$SHELL_BIN" "$SCRIPT_UNDER_TEST" "$@"; }
+# 脱离控制终端运行：docker compose run 默认分配 TTY，确认逻辑的测试不能依赖调用方式。
+run_no_tty() { setsid "$SHELL_BIN" "$SCRIPT_UNDER_TEST" "$@" </dev/null; }
+command -v setsid >/dev/null 2>&1 || { printf '前提不满足：测试环境缺少 setsid。\n' >&2; exit 1; }
 
 # 断言只描述机制，期望值一律从注册表现场推导。清单会随厂商支持情况增删，
 # 测试里不出现任何 Agent 名字，增删 Agent 不应该需要改动本文件。
@@ -166,6 +169,19 @@ other_path="$(entry_path_of "$other_id" user)"
 run --scope user --source "$WORKSPACE" --target "$H2" --agent "$pick_id" --force >/dev/null 2>&1
 [ -f "$H2/$pick_path" ] && [ ! -e "$H2/$other_path" ] &&
   ok "--agent 只处理指定 Agent" || bad "--agent 过滤未生效"
+
+head_ "执行确认"
+H3="$(fresh_home)"
+probe_yes="$(entry_paths user | head -1)"
+# 容器内没有控制终端：不带 --force 必须在确认处失败，且不留任何写入。
+if run_no_tty --scope user --source "$WORKSPACE" --target "$H3" >/dev/null 2>&1; then
+  bad "无终端且未带 --force 时应失败"
+else
+  ok "无终端且未带 --force 时非零退出"
+fi
+[ ! -e "$H3/$probe_yes" ] && ok "确认失败时不落盘" || bad "确认失败仍然落盘"
+run_no_tty --scope user --source "$WORKSPACE" --target "$H3" --force >/dev/null 2>&1
+[ -f "$H3/$probe_yes" ] && ok "--force 跳过确认" || bad "--force 未跳过确认"
 
 head_ "资源来源"
 H4="$(fresh_home)"
