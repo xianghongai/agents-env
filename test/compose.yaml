@@ -32,12 +32,14 @@ services:
     image: agents-env-test:latest
     command: >
       bash -c '
-      bash -n setup-instructions.sh && zsh -n setup-instructions.sh &&
-      shellcheck --shell=bash --severity=style setup-instructions.sh &&
-      shfmt -d -i 2 -ci setup-instructions.sh &&
+      for f in setup-instructions.sh setup-skills.sh; do
+        bash -n $$f && zsh -n $$f &&
+        shellcheck --shell=bash --severity=style $$f &&
+        shfmt -d -i 2 -ci $$f || exit 1;
+      done &&
       for sh in bash zsh; do
-        TEST_SHELL=$$sh bash test/run-tests.sh || exit 1;
-        TEST_SHELL=$$sh bash test/skills-tests.sh || exit 1;
+        TEST_SHELL=$$sh bash test/setup-instructions/tests.sh || exit 1;
+        TEST_SHELL=$$sh bash test/setup-skills/tests.sh || exit 1;
       done'
 
   # Bash 3.2，与 macOS 自带版本一致；Alpine + BusyBox，另覆盖一层用户空间差异。
@@ -52,8 +54,8 @@ services:
     image: agents-env-test-bash32:latest
     command: >
       bash -c '
-      TEST_SHELL=bash bash test/run-tests.sh &&
-      TEST_SHELL=bash bash test/skills-tests.sh'
+      TEST_SHELL=bash bash test/setup-instructions/tests.sh &&
+      TEST_SHELL=bash bash test/setup-skills/tests.sh'
 
   # PTY 交互测试。用 HOME 隔离：零参数才进交互模式，不能传 --target。
   test-pty:
@@ -73,5 +75,6 @@ services:
       for sh in bash zsh; do
         H=$$(mktemp -d); mkdir -p "$$H/.claude" "$$H/.agents/skills/demo-skill";
         printf "x\n" > "$$H/.agents/skills/demo-skill/SKILL.md";
-        HOME=$$H expect test/pty-tests.exp $$sh || exit 1;
+        HOME=$$H expect test/setup-instructions/pty.exp $$sh || exit 1;
+        HOME=$$H expect test/setup-skills/pty.exp $$sh || exit 1;
       done'

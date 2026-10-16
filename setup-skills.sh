@@ -53,8 +53,10 @@ MENU_RENDERED_LINES=0
 MENU_KEY=""
 REPLY_VALUE=""
 PLAN=""
-APPLIED_COUNT=0
-SKIPPED_COUNT=0
+# 不产生副作用的计划动作：展示时归入「已就绪」或「需注意」，且不触发执行确认。
+readonly PASSIVE_ACTIONS="skip-link skip-link-dir standard fetch-skip fallback blocked-link blocked-bak"
+# 任一阶段实际执行过动作才输出「完成」；条数清单里已经展示，不再重复统计。
+APPLIED=false
 
 print_usage() {
   cat <<'EOF'
@@ -93,7 +95,8 @@ print_usage() {
   软链：只处理共享库中含 SKILL.md 的目录，按注册表中每个 Agent 各 Scope 声明的 mode 处理。
         link-dir  整个目录软链到共享库；目标已是含其它内容的实体目录时
                   自动回退为 link-each，避免破坏该 Agent 自带的 Skills。
-        link-each 为共享库中的每一项各建一条软链。
+        link-each 为共享库中的每一项各建一条软链；共享库中已改名或删除的 Skill，
+                  其指向共享库的失效软链一并清理。
         none      不动作，并清理该目录下指向共享库的冗余软链。
 
 示例：
@@ -800,16 +803,43 @@ plan_link_each() {
     want="$(relative_to_skills_root "$2/${name}")/${name}"
     if [ -L "$link_path" ]; then
       if [ "$(readlink "$link_path")" = "$want" ]; then
-        add_plan "skip-link" "$1" "$2/${name}" "软链已正确"
+        add_plan "skip-link" "$1" "$2/${name}" "已软链"
       else
         add_plan "relink" "$1" "$2/${name}" "改指向 ${want}"
       fi
     elif [ -e "$link_path" ]; then
-      add_plan "blocked-link" "$1" "$2/${name}" "同名实体存在，跳过不覆盖"
+      add_plan "blocked-link" "$1" "$2/${name}" "同名实体存在，不覆盖"
     else
       add_plan "link-each" "$1" "$2/${name}" "-> ${want}"
     fi
   done <"${WORK_DIRECTORY}/shared"
+  plan_stale_links "$1" "$2"
+}
+
+# 共享库中的 Skill 改名或删除后，旧软链不会出现在上面的走访里，需要反向扫描。
+# 只清理指向共享库、且已解析不到 Skill 的软链：别名软链只要还能用就保留，
+# 指向别处的软链与实体目录一概不碰。
+plan_stale_links() {
+  # $1 展示名，$2 Agent 的 skills 相对路径
+  link_root="${TARGET_ROOT}/$2"
+  [ -d "$link_root" ] || return 0
+  find "$link_root" -mindepth 1 -maxdepth 1 -type l >"${WORK_DIRECTORY}/links" 2>/dev/null || true
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$(readlink "$candidate")" in
+      *"${SKILLS_ROOT%/}/"*) ;;
+      *) continue ;;
+    esac
+    name="$(basename "$candidate")"
+    # 共享库里仍有同名 Skill 的已由上面的 relink 处理。
+    grep -Fxq -- "$name" "${WORK_DIRECTORY}/shared" && continue
+    # 旧版库内备份迁出后，指向它的软链同样失效，不等到下一次运行。
+    case "$name" in
+      *.local.bak) ;;
+      *) [ -f "${candidate}/SKILL.md" ] && continue ;;
+    esac
+    add_plan "prune-stale" "$1" "$2/${name}" "共享库中已无此 Skill，失效软链"
+  done <"${WORK_DIRECTORY}/links"
 }
 
 plan_link() {
@@ -832,7 +862,7 @@ plan_link() {
         want="$(relative_to_skills_root "$skills_path")"
         if [ -L "$link_path" ]; then
           if [ "$(readlink "$link_path")" = "$want" ]; then
-            add_plan "skip-link" "$display_name" "$skills_path" "整目录软链已正确"
+            add_plan "skip-link-dir" "$display_name" "$skills_path" "整个目录已软链"
           else
             add_plan "relink-dir" "$display_name" "$skills_path" "改指向 ${want}"
           fi
@@ -853,7 +883,7 @@ plan_link() {
             [ -n "$candidate" ] || continue
             case "$(readlink "$candidate")" in
               *"$SKILLS_ROOT"*)
-                add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" "声明 none，冗余软链"
+                add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" "注册表声明不建链"
                 ;;
             esac
           done <"${WORK_DIRECTORY}/stale"
@@ -882,19 +912,119 @@ print_context() {
   fi
 }
 
+# 计划分层展示：已就绪的只按目录汇总条数，要执行、要清理、需注意的逐条列出。
+# 多个 Agent 共用同一目录时，同一动作同一路径只列一行，Agent 名合并展示。
 print_plan() {
-  info ""
-  printf '%s' "$PLAN" | while IFS='|' read -r action name entry_relpath detail; do
-    [ -n "$action" ] || continue
-    printf '  %-14s %-26s %-44s %s\n' "$action" "$name" "$entry_relpath" "$detail"
-  done
+  printf '%s' "$PLAN" | awk -F'|' -v passive=" $PASSIVE_ACTIONS " '
+    function dir_of(p) { sub(/\/[^\/]*$/, "", p); return p }
+    function base_of(p) { sub(/^.*\//, "", p); return p }
+    function add_who(k, who) {
+      if ((k SUBSEP who) in who_seen) return
+      who_seen[k SUBSEP who] = 1
+      # 先判断再赋值：部分 awk 在求值右侧前就为左侧建键，写成一行会多出前导逗号。
+      if (k in who_list) who_list[k] = who_list[k] ", " who
+      else who_list[k] = who
+    }
+    function widen(text) { if (length(text) > width) width = length(text) }
+    # 动作编码只供内部流转，展示时换成读者能直接看懂的说法。
+    # 同一节内的标签保持等宽：awk 按字节计宽，中文标签对不齐，所以标签放在已对齐的路径之后。
+    function label_of(act) {
+      if (act == "link-each" || act == "link-dir") return "新建软链"
+      if (act == "relink" || act == "relink-dir") return "修正软链"
+      if (act == "move-bak") return "迁出备份"
+      if (act == "prune-stale") return "失效软链"
+      if (act == "prune-link") return "冗余软链"
+      if (act == "fetch-new") return "新增"
+      if (act == "fetch-replace") return "替换"
+      if (act == "fallback") return "回退"
+      if (act == "blocked-link" || act == "blocked-bak") return "跳过"
+      return act
+    }
+    $1 == "" { next }
+    {
+      act = $1; who = $2; entry = $3; detail = $4
+      if (act == "skip-link" || act == "fetch-skip") {
+        rk = act SUBSEP dir_of(entry)
+      } else if (act == "skip-link-dir" || act == "standard") {
+        rk = act SUBSEP entry
+      } else {
+        rk = ""
+      }
+      if (rk != "") {
+        if (!(rk in ready_count)) {
+          ready_order[++ready_total] = rk
+          ready_act[rk] = act
+          ready_key[rk] = (act == "skip-link" || act == "fetch-skip") ? dir_of(entry) : entry
+          ready_count[rk] = 0
+          widen(ready_key[rk])
+        }
+        if (!((rk SUBSEP entry) in ready_entry)) {
+          ready_entry[rk SUBSEP entry] = 1
+          ready_count[rk]++
+        }
+        add_who(rk, (act == "fetch-skip") ? base_of(entry) : who)
+        next
+      }
+      if (act == "prune-link" || act == "prune-stale") section = "prune"
+      else if (index(passive, " " act " ") > 0) section = "note"
+      else section = "change"
+      k = act SUBSEP entry
+      if (!(k in row_act)) {
+        rows[section, ++row_total[section]] = k
+        row_act[k] = act
+        row_entry[k] = entry
+        # 说明与标签重复时不展示：新建类的指向可由路径推导，失效软链的原因标签已说清。
+        row_detail[k] = (act == "link-each" || act == "link-dir" || act == "fetch-new" || act == "prune-stale") ? "" : detail
+        widen(entry)
+      }
+      # 获取阶段的名称就是路径末段，不再重复。
+      if (who != base_of(entry)) add_who(k, who)
+    }
+    function print_rows(section, title,    i, k, tail) {
+      if (row_total[section] == 0) return
+      printf "\n%s（%d）\n", title, row_total[section]
+      for (i = 1; i <= row_total[section]; i++) {
+        k = rows[section, i]
+        tail = label_of(row_act[k])
+        if (k in who_list) tail = tail "  " who_list[k]
+        if (row_detail[k] != "") tail = tail "  " row_detail[k]
+        printf "  %-" width "s  %s\n", row_entry[k], tail
+      }
+    }
+    END {
+      if (ready_total > 0) {
+        printf "\n已就绪\n"
+        for (i = 1; i <= ready_total; i++) {
+          rk = ready_order[i]
+          act = ready_act[rk]
+          if (act == "skip-link") summary = ready_count[rk] " 项已软链"
+          else if (act == "skip-link-dir") summary = "整个目录已软链"
+          else if (act == "standard") summary = "原生读取共享库"
+          else summary = ready_count[rk] " 项同名已存在，--force 才替换"
+          printf "  %-" width "s  %s：%s\n", ready_key[rk], summary, who_list[rk]
+        }
+      }
+      print_rows("change", "即将执行")
+      print_rows("prune", "即将清理")
+      print_rows("note", "需注意")
+    }
+  '
   info ""
 }
 
+# 计划里是否有会产生副作用的动作；全部已就绪时无需确认。
+plan_has_changes() {
+  printf '%s' "$PLAN" | awk -F'|' -v passive=" $PASSIVE_ACTIONS " '
+    $1 != "" && index(passive, " " $1 " ") == 0 { found = 1 }
+    END { exit !found }
+  '
+}
+
 apply_plan() {
-  printf '%s' "$PLAN" >"${WORK_DIRECTORY}/plan"
+  # 多个 Agent 共用同一目录时计划行会重复，同一动作同一路径只执行一次。
+  printf '%s' "$PLAN" | awk -F'|' '$1 != "" && !seen[$1 FS $3]++' >"${WORK_DIRECTORY}/plan"
   dest_root="${TARGET_ROOT}/${SKILLS_ROOT}"
-  while IFS='|' read -r action name entry_relpath detail; do
+  while IFS='|' read -r action name entry_relpath _; do
     [ -n "$action" ] || continue
     target="${TARGET_ROOT}/${entry_relpath}"
     case "$action" in
@@ -913,39 +1043,41 @@ apply_plan() {
         cp -R "${CLONE_DIRECTORY}/${source_relpath}/." "$target"
         # 单 Skill 仓库整份复制时会带上克隆的版本库元数据，它不属于 Skill。
         rm -rf "${target}/.git"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
       move-bak)
         mkdir -p "${TARGET_ROOT}/${BACKUP_ROOT}"
         mv "$target" "${TARGET_ROOT}/${BACKUP_ROOT}/${name}"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
       link-dir | relink-dir)
         mkdir -p "$(dirname "$target")"
         [ -L "$target" ] && rm "$target"
         ln -s "$(relative_to_skills_root "$entry_relpath")" "$target"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
       link-each | relink)
         # 目标由路径重新推导，不从展示文案反解：文案变了不该影响行为。
         mkdir -p "$(dirname "$target")"
         [ -L "$target" ] && rm "$target"
         ln -s "$(relative_to_skills_root "$entry_relpath")/$(basename "$entry_relpath")" "$target"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
-      prune-link)
+      prune-link | prune-stale)
         [ -L "$target" ] && rm "$target"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
       *)
-        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        # 已就绪与需注意的条目只供展示，没有要执行的动作。
         ;;
     esac
   done <"${WORK_DIRECTORY}/plan"
 }
 
 print_summary() {
-  info "完成：执行 ${APPLIED_COUNT} 项，跳过 ${SKIPPED_COUNT} 项。"
+  if [ "$APPLIED" = true ]; then
+    info "完成。"
+  fi
 }
 
 # 一个阶段 = 计划、展示、确认、应用。两个阶段互不依赖：
@@ -963,7 +1095,11 @@ run_phase() {
   if [ "$DRY_RUN" = true ]; then
     return 0
   fi
-  if ! confirm_default_yes "执行以上 $1 计划？"; then
+  if ! plan_has_changes; then
+    info "[$1] 无需改动。"
+    return 0
+  fi
+  if ! confirm_default_yes "是否继续？"; then
     info "[$1] 已跳过。"
     return 0
   fi

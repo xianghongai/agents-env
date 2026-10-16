@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 仅在一次性容器内执行。宿主不运行本文件，也不运行被测脚本。
 # 只覆盖 Instructions 的核心能力：两种 Scope 的安装结果、幂等、不破坏既有内容、
-# dry-run 无副作用、两种资源来源。Skills 相关能力由 skills-tests.sh 覆盖。
+# dry-run 无副作用、两种资源来源、计划的分层展示、共用入口的合并与冲突检查。Skills 相关能力由 test/setup-skills/tests.sh 覆盖。
 #
-# 用法：TEST_SHELL=bash|zsh bash test/run-tests.sh
+# 用法：TEST_SHELL=bash|zsh bash test/setup-instructions/tests.sh
 set -uo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -211,6 +211,74 @@ H5="$(fresh_home)"
 PATH="$FAKEBIN:$PATH" FAKE_WORKSPACE="$WORKSPACE" \
   "$SHELL_BIN" "$ISO/setup-instructions.sh" --scope user --target "$H5" --force >/dev/null 2>&1
 [ -f "$H5/$probe" ] && ok "下载模式可完成安装" || bad "下载模式未完成安装"
+
+head_ "计划的分层展示"
+H6="$(fresh_home)"
+out6="$(run --scope user --source "$WORKSPACE" --target "$H6" --dry-run 2>&1)"
+printf '%s' "$out6" | grep -q '^即将执行' && ok "首次运行列出即将执行" || bad "缺少即将执行一节"
+printf '%s' "$out6" | grep -Eq 'create-entry|update-entry|skip-entry|skip-unknown' &&
+  bad "计划中出现内部动作编码" || ok "计划不展示内部动作编码"
+run --scope user --source "$WORKSPACE" --target "$H6" --force >/dev/null 2>&1
+out6="$(run_no_tty --scope user --source "$WORKSPACE" --target "$H6" 2>&1)" &&
+  ok "全部已就绪时不要求确认" || bad "全部已就绪时仍要求确认"
+printf '%s' "$out6" | grep -q '^已就绪' && ok "全部已就绪时汇总展示" || bad "缺少已就绪一节"
+printf '%s' "$out6" | grep -q '无需改动' && ok "全部已就绪时提示无需改动" || bad "未提示无需改动"
+printf '%s' "$out6" | grep -q '^完成' && bad "无改动时仍输出完成" || ok "无改动时不输出完成"
+
+# 共用入口的形态用虚构注册表现造，不依赖真实清单恰好有哪些条目。
+# $1 第二个 Agent 是否声明 frontmatter 变体（yes/no）
+make_shared_registry() {
+  reg="$(mktemp -d /tmp/sharedreg.XXXXXX)"
+  mkdir -p "$reg/config" "$reg/templates/fragments"
+  cp "$WORKSPACE/templates/entry-user.md" "$WORKSPACE/templates/entry-project.md" "$reg/templates/"
+  printf -- '---\nkind: fictional\n---\n' >"$reg/templates/fragments/fictional.frontmatter"
+  fm='null'
+  [ "$1" = yes ] && fm='"templates/fragments/fictional.frontmatter"'
+  cat >"$reg/config/agents.json" <<JSON
+{
+  "shared": { "instructions_root": { "user": "shared/AGENTS.md", "project": "AGENTS.md" },
+              "skills_root": { "user": "shared/skills", "project": "shared/skills" } },
+  "agents": {
+    "twin-a": { "name": "Twin A",
+      "instructions": { "scope": { "user": "twins/ENTRY.md", "project": null } } },
+    "twin-b": { "name": "Twin B",
+      "instructions": { "scope": { "user": "twins/ENTRY.md", "project": null },
+                        "template_frontmatter": { "user": $fm } } },
+    "loner": { "name": "Loner",
+      "instructions": { "scope": { "user": null, "project": null } } }
+  }
+}
+JSON
+  printf '%s' "$reg"
+}
+
+head_ "共用入口：合并展示、只写一次"
+SAME="$(make_shared_registry no)"
+H7="$(mktemp -d /tmp/fakehome.XXXXXX)"
+mkdir -p "$H7/twins"
+printf 'original\n' >"$H7/twins/ENTRY.md"
+out7="$(run --scope user --source "$SAME" --target "$H7" --force 2>&1)"
+[ "$(printf '%s' "$out7" | grep -c 'twins/ENTRY.md')" -eq 1 ] && ok "同一入口只列一行" || bad "同一入口重复列出"
+printf '%s' "$out7" | grep -q 'twins/ENTRY.md  *覆盖  Twin A, Twin B' &&
+  ok "共用入口的 Agent 名合并展示" || bad "Agent 名未合并"
+printf '%s' "$out7" | grep -q '^未声明入口，不处理：Loner$' &&
+  ok "未声明入口的 Agent 汇总成一行" || bad "未声明入口未汇总"
+grep -q '^original$' "$H7/twins/ENTRY.md.local.bak" 2>/dev/null &&
+  ok "备份保留的是原件，未被第二次写入冲掉" || bad "备份丢失了原件"
+printf '%s' "$out7" | grep -q '^完成。$' && ok "写入后输出完成" || bad "写入后未输出完成"
+printf '%s' "$out7" | grep -Eq '写入 [0-9]+ 项|跳过 [0-9]+ 项' && bad "结尾仍输出统计" || ok "结尾不输出统计"
+
+head_ "共用入口：内容不一致时在写入前中止"
+DIFF="$(make_shared_registry yes)"
+H8="$(mktemp -d /tmp/fakehome.XXXXXX)"
+before8="$(find "$H8" | sort | md5sum)"
+if out8="$(run --scope user --source "$DIFF" --target "$H8" --force 2>&1)"; then
+  bad "内容不一致时应当失败"
+else
+  ok "内容不一致时非零退出"
+fi
+printf '%s' "$out8" | grep -q 'twins/ENTRY.md' && ok "报错指出冲突的入口" || bad "报错未指出冲突入口"
+[ "$before8" = "$(find "$H8" | sort | md5sum)" ] && ok "冲突时无副作用" || bad "冲突时产生了副作用"
 
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

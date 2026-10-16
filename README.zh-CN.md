@@ -105,7 +105,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | mode | 动作 |
 | :--- | :--- |
 | `link-dir` | 整个目录软链到共享库；目标已是含其它内容的实体目录时，自动回退为 `link-each`，不破坏该 Agent 自带的 Skills |
-| `link-each` | 为共享库中的每个 Skill 各建一条软链，与 Agent 自带的 Skills 共存 |
+| `link-each` | 为共享库中的每个 Skill 各建一条软链，与 Agent 自带的 Skills 共存；共享库中的 Skill 改名或删除后，指向它的失效软链在下次运行时清理（只删软链，不删目录） |
 | `none` | 不建链接，并清理该目录下指向共享库的冗余软链（只删软链，不删目录） |
 
 <details>
@@ -188,7 +188,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | [`config/README.md`](config/README.md) | 注册表与协议的维护指南 |
 | `templates/` | 入口文件正文与少数 Agent 的变体片段 |
 | [`templates/README.md`](templates/README.md) | 入口模板的维护指南 |
-| `test/` | 测试脚本与自包含的容器配置 |
+| `test/` | 测试脚本与自包含的容器配置，运行方式见 [test/README.md](test/README.md) |
 
 ---
 

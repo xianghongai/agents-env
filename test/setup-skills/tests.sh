@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 仅在一次性容器内执行。覆盖 setup-skills.sh 的核心能力：
 # 来源识别（单 Skill / 多 Skill、--path 起点、--skill 筛选）、增量获取与库外备份、两种软链形态与整目录的回退、
-# none 的清理、纯机制（虚构注册表）。
+# none 的清理、改名与删除后的失效软链清理、计划的分层展示、纯机制（虚构注册表）。
 #
-# 用法：TEST_SHELL=bash|zsh bash test/skills-tests.sh
+# 用法：TEST_SHELL=bash|zsh bash test/setup-skills/tests.sh
 set -uo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -320,6 +320,68 @@ before4="$(find "$H4" | sort | md5sum)"
 run --scope user --source "$WORKSPACE" --target "$H4" --repo "$REPO" --dry-run >/dev/null 2>&1
 [ "$before4" = "$(find "$H4" | sort | md5sum)" ] && ok "--dry-run 未修改任何文件" || bad "--dry-run 产生了副作用"
 
+head_ "共享库中 Skill 改名与删除后清理失效软链"
+HR="$(fresh_home)"
+for n in old-name doomed kept; do
+  mkdir -p "$HR/${SKILLS_ROOT_USER}/$n"
+  printf 'x\n' >"$HR/${SKILLS_ROOT_USER}/$n/SKILL.md"
+done
+run --scope user --source "$WORKSPACE" --target "$HR" --force >/dev/null 2>&1
+[ -L "$HR/${LINK_EACH_USER}/old-name" ] && [ -L "$HR/${LINK_EACH_USER}/doomed" ] ||
+  { printf '前提不满足：初次运行未建立逐项软链。\n' >&2; exit 1; }
+mv "$HR/${SKILLS_ROOT_USER}/old-name" "$HR/${SKILLS_ROOT_USER}/new-name"
+rm -rf "$HR/${SKILLS_ROOT_USER}/doomed"
+# 不该被清理的三种形态：仍可用的别名软链、指向共享库之外的软链、实体目录。
+ln -s "$(rel_prefix "${LINK_EACH_USER}/alias")${SKILLS_ROOT_USER}/kept" "$HR/${LINK_EACH_USER}/alias"
+ln -s /nonexistent/elsewhere "$HR/${LINK_EACH_USER}/foreign-link"
+mkdir -p "$HR/${LINK_EACH_USER}/vendor-own"
+printf 'v\n' >"$HR/${LINK_EACH_USER}/vendor-own/SKILL.md"
+before_r="$(find "$HR" | sort | md5sum)"
+out_r="$(run --scope user --source "$WORKSPACE" --target "$HR" --dry-run 2>&1)"
+[ "$before_r" = "$(find "$HR" | sort | md5sum)" ] && ok "--dry-run 不清理" || bad "--dry-run 清理了软链"
+printf '%s' "$out_r" | grep -q "${LINK_EACH_USER}/old-name  *失效软链" &&
+  ok "计划中列出失效软链" || bad "计划未列出失效软链"
+printf '%s' "$out_r" | grep -Eq 'prune-stale|link-each|skip-link' &&
+  bad "计划中出现内部动作编码" || ok "计划不展示内部动作编码"
+# 分层展示：已就绪只汇总，要执行与要清理各自成节，动作以中文标签而非内部编码展示。
+printf '%s' "$out_r" | grep -q '^已就绪' && ok "计划含已就绪汇总" || bad "计划缺少已就绪汇总"
+printf '%s' "$out_r" | grep -q '^即将执行' && ok "计划含即将执行一节" || bad "计划缺少即将执行一节"
+printf '%s' "$out_r" | grep -q '^即将清理' && ok "计划含即将清理一节" || bad "计划缺少即将清理一节"
+printf '%s' "$out_r" | grep -q "${LINK_EACH_USER}/kept" &&
+  bad "已就绪的条目仍逐条列出" || ok "已就绪的条目不逐条列出"
+run --scope user --source "$WORKSPACE" --target "$HR" --force >/dev/null 2>&1
+[ ! -L "$HR/${LINK_EACH_USER}/old-name" ] && ok "改名后旧名软链被清理" || bad "旧名软链残留"
+[ -L "$HR/${LINK_EACH_USER}/new-name" ] && [ -f "$HR/${LINK_EACH_USER}/new-name/SKILL.md" ] &&
+  ok "改名后新名软链建立" || bad "新名软链未建立"
+[ ! -L "$HR/${LINK_EACH_USER}/doomed" ] && ok "删除后软链被清理" || bad "已删除 Skill 的软链残留"
+[ -L "$HR/${LINK_EACH_USER}/alias" ] && ok "仍可用的别名软链保留" || bad "别名软链被误删"
+[ -L "$HR/${LINK_EACH_USER}/foreign-link" ] && ok "指向共享库之外的软链不碰" || bad "外部软链被误删"
+[ -f "$HR/${LINK_EACH_USER}/vendor-own/SKILL.md" ] && ok "实体目录不碰" || bad "实体目录被破坏"
+sum_r="$(find "$HR" | sort | md5sum)"
+run --scope user --source "$WORKSPACE" --target "$HR" --force >/dev/null 2>&1
+[ "$sum_r" = "$(find "$HR" | sort | md5sum)" ] && ok "清理后重复执行结果一致" || bad "重复执行仍有变化"
+# 全部已就绪时没有可确认的内容：无终端、不带 --yes 也应直接完成。
+if out_n="$(run_no_tty --scope user --source "$WORKSPACE" --target "$HR" 2>&1)"; then
+  ok "全部已就绪时不要求确认"
+else
+  bad "全部已就绪时仍要求确认"
+fi
+printf '%s' "$out_n" | grep -q '无需改动' && ok "全部已就绪时提示无需改动" || bad "未提示无需改动"
+printf '%s' "$out_n" | grep -q '^完成' && bad "无改动时仍输出完成" || ok "无改动时不输出完成"
+
+# link-dir 回退为逐项软链时走同一套清理。
+PR="$(mktemp -d /tmp/skproj.XXXXXX)"
+mkdir -p "$PR/${SKILLS_ROOT_PROJ}/gone-skill" "$PR/${LINK_DIR_PROJ}/vendor-own-skill"
+printf 'x\n' >"$PR/${SKILLS_ROOT_PROJ}/gone-skill/SKILL.md"
+printf 'v\n' >"$PR/${LINK_DIR_PROJ}/vendor-own-skill/SKILL.md"
+run --scope project --source "$WORKSPACE" --target "$PR" --force >/dev/null 2>&1
+[ -L "$PR/${LINK_DIR_PROJ}/gone-skill" ] ||
+  { printf '前提不满足：回退场景未建立逐项软链。\n' >&2; exit 1; }
+rm -rf "$PR/${SKILLS_ROOT_PROJ}/gone-skill"
+run --scope project --source "$WORKSPACE" --target "$PR" --force >/dev/null 2>&1
+[ ! -L "$PR/${LINK_DIR_PROJ}/gone-skill" ] && ok "回退为逐项软链时同样清理" || bad "回退场景失效软链残留"
+[ -d "$PR/${LINK_DIR_PROJ}/vendor-own-skill" ] && ok "回退场景自带内容不碰" || bad "回退场景自带内容被破坏"
+
 head_ "纯机制：虚构注册表"
 FAKE="$(mktemp -d /tmp/fakereg.XXXXXX)"
 mkdir -p "$FAKE/config"
@@ -355,6 +417,46 @@ mkdir -p "$P3/shared/library/some-skill" "$P3/vendor-a/bag"
 ln -s ../../shared/library/some-skill "$P3/vendor-a/bag/some-skill"
 run --scope project --source "$FAKE" --target "$P3" --force >/dev/null 2>&1
 [ ! -e "$P3/vendor-a/bag/some-skill" ] && ok "project 声明 none 时清理冗余软链" || bad "none 未清理冗余软链"
+
+head_ "纯机制：多个 Agent 共用同一目录"
+FAKE2="$(mktemp -d /tmp/fakereg.XXXXXX)"
+mkdir -p "$FAKE2/config"
+cat >"$FAKE2/config/agents.json" <<'JSON'
+{
+  "shared": { "skills_root": { "user": "shared/library", "project": "shared/library" } },
+  "agents": {
+    "twin-a": { "name": "Twin A", "instructions": { "scope": { "user": null, "project": null } },
+      "skills": { "scope": { "user": { "path": "twins/dir", "mode": "link-each" },
+                             "project": { "path": null, "mode": "none" } } } },
+    "twin-b": { "name": "Twin B", "instructions": { "scope": { "user": null, "project": null } },
+      "skills": { "scope": { "user": { "path": "twins/dir", "mode": "link-each" },
+                             "project": { "path": null, "mode": "none" } } } }
+  }
+}
+JSON
+H8="$(mktemp -d /tmp/fakehome.XXXXXX)"
+mkdir -p "$H8/shared/library/twin-skill"
+printf 'x\n' >"$H8/shared/library/twin-skill/SKILL.md"
+# 结尾不再输出条数，用 ln 的替身记录调用次数来确认只执行一次。
+LNBIN="$(mktemp -d /tmp/lnbin.XXXXXX)"
+REAL_LN="$(command -v ln)"
+cat >"$LNBIN/ln" <<SHIM
+#!/bin/sh
+printf 'x\n' >>"$LNBIN/calls"
+exec "$REAL_LN" "\$@"
+SHIM
+chmod +x "$LNBIN/ln"
+out_t="$(PATH="$LNBIN:$PATH" run --scope user --source "$FAKE2" --target "$H8" --force 2>&1)"
+[ "$(printf '%s' "$out_t" | grep -c 'twins/dir/twin-skill')" -eq 1 ] &&
+  ok "同一路径只列一行" || bad "同一路径重复列出"
+printf '%s' "$out_t" | grep -q 'twins/dir/twin-skill  *新建软链  Twin A, Twin B$' &&
+  ok "共用目录的 Agent 名合并展示" || bad "Agent 名未合并"
+[ "$(wc -l <"$LNBIN/calls" 2>/dev/null | tr -d ' ')" = "1" ] &&
+  ok "同一路径只执行一次" || bad "同一路径执行次数不对：$(wc -l <"$LNBIN/calls" 2>/dev/null)"
+printf '%s' "$out_t" | grep -q '^完成。$' && ok "执行后输出完成" || bad "执行后未输出完成"
+printf '%s' "$out_t" | grep -Eq '执行 [0-9]+ 项|跳过 [0-9]+ 项' && bad "结尾仍输出统计" || ok "结尾不输出统计"
+[ "$(readlink "$H8/twins/dir/twin-skill" 2>/dev/null)" = "../../shared/library/twin-skill" ] &&
+  ok "共用目录软链正确" || bad "共用目录软链不对"
 
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

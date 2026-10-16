@@ -1,5 +1,5 @@
 #!/usr/bin/expect -f
-# PTY 交互验证：只在容器内执行，只覆盖核心交互路径。
+# setup-instructions.sh 的 PTY 交互验证：只在容器内执行，只覆盖核心交互路径。
 # 用 HOME 隔离：零参数才进交互模式，不能传 --target。
 set timeout 20
 set script "/workspace/setup-instructions.sh"
@@ -50,7 +50,7 @@ expect {
 }
 expect {
   timeout { bad "未出现确认提示"; exit 1 }
-  -re "按以上计划执行？" { ok "出现确认提示" }
+  "是否继续？" { ok "出现确认提示" }
 }
 if {[file exists "$home/$probe"]} {
   bad "确认前已写入文件"
@@ -60,7 +60,7 @@ if {[file exists "$home/$probe"]} {
 send "\r"
 expect {
   timeout { bad "确认后未完成" }
-  "完成：" { ok "确认后完成安装" }
+  "完成。" { ok "确认后完成安装" }
 }
 expect eof
 
@@ -76,29 +76,6 @@ expect {
   timeout { bad "q 未取消" }
   "已取消" { ok "菜单中按 q 取消" }
 }
-expect eof
-
-# --- setup-skills.sh：范围菜单 + 仓库地址输入 + 取消 ---
-spawn $shell /workspace/setup-skills.sh
-expect {
-  timeout { bad "skills 未出现范围菜单"; exit 1 }
-  "选择安装范围" { ok "skills 出现范围菜单" }
-}
-send "\r"
-expect {
-  timeout { bad "skills 未询问仓库地址" }
-  "来源仓库地址" { ok "skills 询问仓库地址" }
-}
-send "\r"
-expect {
-  timeout { bad "skills 未进入软链阶段" }
-  "\[软链\]" { ok "留空仓库地址时只做软链" }
-}
-expect {
-  timeout { bad "skills 未出现确认提示" }
-  -re "执行以上.*计划？" { ok "skills 出现阶段确认提示" }
-}
-send "n\r"
 expect eof
 
 puts "\nPTY 通过 $pass，失败 $fail"

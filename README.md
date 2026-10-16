@@ -105,7 +105,7 @@ The registry declares a `mode` for each agent, separately for each scope:
 | mode | Behavior |
 | :--- | :--- |
 | `link-dir` | Links the whole directory to the store. If the target is already a real directory with other content, falls back to `link-each` so the agent's built-in Skills stay intact |
-| `link-each` | Creates one symlink per Skill in the store, alongside the agent's own Skills |
+| `link-each` | Creates one symlink per Skill in the store, alongside the agent's own Skills. When a Skill in the store is renamed or deleted, the next run removes the broken symlinks that pointed to it (symlinks only, never directories) |
 | `none` | Creates no links, and removes stale symlinks in that directory that point into the store (symlinks only, never directories) |
 
 <details>
@@ -188,7 +188,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | [`config/README.md`](config/README.md) | Registry and schema maintenance guide |
 | `templates/` | Entry file body and per-agent variant fragments |
 | [`templates/README.md`](templates/README.md) | Entry template maintenance guide |
-| `test/` | Test scripts and self-contained container setup |
+| `test/` | Test scripts and self-contained container setup. See [test/README.md](test/README.md) (Chinese) |
 
 ---
 

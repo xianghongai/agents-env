@@ -45,8 +45,10 @@ MENU_KEY=""
 MENU_MARKS=""
 REPLY_VALUE=""
 PLAN=""
-APPLIED_COUNT=0
-SKIPPED_COUNT=0
+# 不产生副作用的计划动作：展示时归入「已就绪」或「未声明入口」，且不触发执行确认。
+readonly PASSIVE_ACTIONS="skip-entry standard skip-unknown"
+# 实际写入过才输出「完成」；条目清单里已经展示，不再重复统计。
+APPLIED=false
 
 print_usage() {
   cat <<'EOF'
@@ -703,9 +705,26 @@ render_entry() {
   sed "s|{{TITLE}}|${title}|g" "$base_template" >>"$3"
 }
 
+# 计划行：动作|展示名|入口相对路径|说明|agent id。
+# agent id 放在最后，只供套用阶段定位渲染结果，不从展示名反查。
 add_plan() {
-  PLAN="${PLAN}$1|$2|$3|$4
+  PLAN="${PLAN}$1|$2|$3|$4|$5
 "
+}
+
+# 多个 Agent 可以声明同一个入口文件。它们只能写入同一份内容，
+# 否则谁后写谁生效，结果取决于遍历顺序；发现不一致在任何写入之前中止。
+# $1 agent id，$2 入口相对路径，$3 渲染结果
+claim_entry() {
+  claimed="${WORK_DIRECTORY}/claimed"
+  [ -f "$claimed" ] || : >"$claimed"
+  owner="$(awk -F '\t' -v want="$2" '$1 == want { print $2; exit }' "$claimed")"
+  if [ -z "$owner" ]; then
+    printf '%s\t%s\n' "$2" "$1" >>"$claimed"
+    return 0
+  fi
+  cmp -s "$3" "${WORK_DIRECTORY}/render/${owner}.${SCOPE}.md" ||
+    fail "${owner} 与 ${1} 共用入口 ${2}，但渲染出的内容不同。请在注册表中让二者使用相同模板，或改用不同路径。"
 }
 
 build_plan() {
@@ -727,61 +746,124 @@ build_plan() {
     instructions="$(agent_field "$agent_id" ".instructions.scope[\$scope]")"
 
     if [ "$instructions" = "standard" ]; then
-      add_plan "standard" "$display_name" "$(shared_instructions_root)" "原生读取标准位置，无需指针文件"
+      add_plan "standard" "$display_name" "$(shared_instructions_root)" "原生读取" "$agent_id"
     elif [ -z "$instructions" ]; then
-      add_plan "skip-unknown" "$display_name" "-" "路径未知，不动作"
+      add_plan "skip-unknown" "$display_name" "-" "未声明入口" "$agent_id"
     else
       entry_path="${TARGET_ROOT}/${instructions}"
       rendered="${staging}/render/${agent_id}.${SCOPE}.md"
       render_entry "$agent_id" "$instructions" "$rendered"
+      claim_entry "$agent_id" "$instructions" "$rendered"
       if [ -e "$entry_path" ] && cmp -s "$rendered" "$entry_path"; then
-        add_plan "skip-entry" "$display_name" "$instructions" "内容已一致"
+        add_plan "skip-entry" "$display_name" "$instructions" "内容已一致" "$agent_id"
       elif [ -e "$entry_path" ]; then
-        add_plan "update-entry" "$display_name" "$instructions" "内容不同，备份为 .local.bak 后覆盖"
+        add_plan "update-entry" "$display_name" "$instructions" "原文件备份为 .local.bak" "$agent_id"
       else
-        add_plan "create-entry" "$display_name" "$instructions" "新建"
+        add_plan "create-entry" "$display_name" "$instructions" "" "$agent_id"
       fi
     fi
 
   done <"${staging}/ids"
 }
 
+# 计划分层展示：已就绪的每个入口一行，要写入的逐条列出，未声明入口的 Agent 汇总成一行。
+# 多个 Agent 共用同一入口时只列一行，Agent 名合并展示。
 print_plan() {
   info "范围：${SCOPE}    目标：${TARGET_ROOT}"
   info "资源：${RESOURCE_SOURCE_LABEL}"
+  printf '%s' "$PLAN" | awk -F'|' '
+    function add_who(k, who) {
+      if ((k SUBSEP who) in who_seen) return
+      who_seen[k SUBSEP who] = 1
+      # 先判断再赋值：部分 awk 在求值右侧前就为左侧建键，写成一行会多出前导逗号。
+      if (k in who_list) who_list[k] = who_list[k] ", " who
+      else who_list[k] = who
+    }
+    function widen(text) { if (length(text) > width) width = length(text) }
+    # 动作编码只供内部流转，展示时换成读者能直接看懂的说法。
+    # 标签等宽且放在已对齐的路径之后：awk 按字节计宽，中文放在前面会对不齐。
+    function label_of(act) {
+      if (act == "create-entry") return "新建"
+      if (act == "update-entry") return "覆盖"
+      return act
+    }
+    $1 == "" { next }
+    {
+      act = $1; who = $2; entry = $3; detail = $4
+      if (act == "skip-unknown") {
+        add_who("unknown", who)
+        next
+      }
+      section = (act == "skip-entry" || act == "standard") ? "ready" : "change"
+      k = act SUBSEP entry
+      if (!(k in row_act)) {
+        rows[section, ++row_total[section]] = k
+        row_act[k] = act
+        row_entry[k] = entry
+        row_detail[k] = detail
+        widen(entry)
+      }
+      add_who(k, who)
+    }
+    END {
+      if (row_total["ready"] > 0) {
+        printf "\n已就绪\n"
+        for (i = 1; i <= row_total["ready"]; i++) {
+          k = rows["ready", i]
+          printf "  %-" width "s  %s：%s\n", row_entry[k], row_detail[k], who_list[k]
+        }
+      }
+      if (row_total["change"] > 0) {
+        printf "\n即将执行（%d）\n", row_total["change"]
+        for (i = 1; i <= row_total["change"]; i++) {
+          k = rows["change", i]
+          tail = label_of(row_act[k]) "  " who_list[k]
+          if (row_detail[k] != "") tail = tail "  " row_detail[k]
+          printf "  %-" width "s  %s\n", row_entry[k], tail
+        }
+      }
+      if ("unknown" in who_list) printf "\n未声明入口，不处理：%s\n", who_list["unknown"]
+    }
+  '
   info ""
-  printf '%s' "$PLAN" | while IFS='|' read -r action name entry_relpath detail; do
-    [ -n "$action" ] || continue
-    printf '  %-13s %-26s %-40s %s\n' "$action" "$name" "$entry_relpath" "$detail"
-  done
-  info ""
+}
+
+# 计划里是否有会产生副作用的动作；全部已就绪时无需确认。
+plan_has_changes() {
+  printf '%s' "$PLAN" | awk -F'|' -v passive=" $PASSIVE_ACTIONS " '
+    $1 != "" && index(passive, " " $1 " ") == 0 { found = 1 }
+    END { exit !found }
+  '
 }
 
 apply_plan() {
   staging="$WORK_DIRECTORY"
-  printf '%s' "$PLAN" >"${staging}/plan"
-  while IFS='|' read -r action name entry_relpath detail; do
+  # 共用同一入口的 Agent 已在 claim_entry 中确认内容一致，同一路径只写一次。
+  # 重复写会让第二次的备份拿到第一次刚写入的新内容，把真正的原件冲掉。
+  printf '%s' "$PLAN" | awk -F'|' '$1 != "" && !seen[$1 FS $3]++' >"${staging}/plan"
+  while IFS='|' read -r action _ entry_relpath _ agent_id; do
     [ -n "$action" ] || continue
     case "$action" in
       create-entry | update-entry)
-        agent_id="$(jq -r --arg n "$name" '.agents | to_entries[] | select(.value.name == $n) | .key' "$(registry_file)")"
         target="${TARGET_ROOT}/${entry_relpath}"
         mkdir -p "$(dirname "$target")"
         if [ "$action" = "update-entry" ]; then
           cp "$target" "${target}.local.bak"
         fi
         cp "${staging}/render/${agent_id}.${SCOPE}.md" "$target"
-        APPLIED_COUNT=$((APPLIED_COUNT + 1))
+        APPLIED=true
         ;;
       *)
-        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        # 已就绪与未声明入口的条目只供展示，没有要执行的动作。
         ;;
     esac
   done <"${staging}/plan"
 }
 
 print_summary() {
-  info "完成：写入 ${APPLIED_COUNT} 项，跳过 ${SKIPPED_COUNT} 项。"
+  if [ "$APPLIED" = true ]; then
+    info "完成。"
+  fi
 }
 
 main() {
@@ -812,7 +894,12 @@ main() {
   fi
 
   # confirm_default_yes 自己负责按需打开终端；--force 时直接跳过。
-  if ! confirm_default_yes "按以上计划执行？"; then
+  if ! plan_has_changes; then
+    info "无需改动。"
+    exit 0
+  fi
+
+  if ! confirm_default_yes "是否继续？"; then
     info "已取消，未做任何修改。"
     exit 0
   fi
