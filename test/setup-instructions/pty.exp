@@ -5,6 +5,8 @@ set timeout 20
 set script "/workspace/setup-instructions.sh"
 set registry "/workspace/config/agents.json"
 set shell [lindex $argv 0]
+# 界面语言固定为 zh-CN，断言才不受容器 locale 影响。
+set env(AGENTS_ENV_SETUP_LANG) zh-CN
 set home $env(HOME)
 
 # 探针路径从注册表推导，清单增删 Agent 不影响本文件。

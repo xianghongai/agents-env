@@ -69,6 +69,14 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 
 Both scripts print the full plan first and only act after you confirm.
 
+### Output language
+
+Both scripts print in English or Simplified Chinese. They check `AGENTS_ENV_SETUP_LANG` first (`en` or `zh-CN`), then `LC_ALL`, `LC_MESSAGES` and `LANG`; a value that starts with `zh` selects Chinese. When none of these is set, for example in cron or under `env -i`, they print English. The language only affects terminal output. The entry files they write are the same in either language.
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | AGENTS_ENV_SETUP_LANG=zh-CN bash
+```
+
 ---
 
 ## Skills

@@ -3,6 +3,8 @@
 # 用 HOME 隔离：零参数才进交互模式，不能传 --target。
 set timeout 20
 set shell [lindex $argv 0]
+# 界面语言固定为 zh-CN，断言才不受容器 locale 影响。
+set env(AGENTS_ENV_SETUP_LANG) zh-CN
 set pass 0
 set fail 0
 

@@ -69,6 +69,14 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 
 脚本执行前会先列出完整计划，确认后才动手。
 
+### 输出语言
+
+两个脚本都支持英文和简体中文输出。语言依次参考 `AGENTS_ENV_SETUP_LANG`（取值 `en` 或 `zh-CN`）、`LC_ALL`、`LC_MESSAGES`、`LANG`，取值以 `zh` 开头即输出中文。都未设置时（如 cron、`env -i`）输出英文。语言只影响终端输出，写入的入口文件内容与语言无关。
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | AGENTS_ENV_SETUP_LANG=en bash
+```
+
 ---
 
 ## Skills

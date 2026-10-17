@@ -10,6 +10,8 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 SCRIPT_UNDER_TEST="${WORKSPACE}/setup-skills.sh"
 REGISTRY="${WORKSPACE}/config/agents.json"
 SHELL_BIN="${TEST_SHELL:-bash}"
+# 界面语言固定为 zh-CN：按报错文字区分拦截原因的用例因此不受容器 locale 影响。
+export AGENTS_ENV_SETUP_LANG=zh-CN
 PASS=0
 FAIL=0
 

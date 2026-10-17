@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 
 # 脚本用到 bash 特性；显式用其他 Shell 执行会绕过 shebang，提前给出明确提示。
+# 此时 msg 尚未定义，语言判断与下方 UI_LANG 保持同一规则。
 if [ -z "${BASH_VERSION:-}" ] && [ -z "${ZSH_VERSION:-}" ]; then
-  printf '错误：请用 bash 或 zsh 运行本脚本，或 curl ... | bash。\n' >&2
+  case "${AGENTS_ENV_SETUP_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}" in
+    zh* | ZH*) printf '错误：请用 bash 或 zsh 运行本脚本，或 curl ... | bash。\n' >&2 ;;
+    *) printf 'Error: run this script with bash or zsh, or curl ... | bash.\n' >&2 ;;
+  esac
   exit 1
 fi
 
 set -Eeuo pipefail
+
+# 界面语言在入口解析一次：专用变量优先，其次按 POSIX 顺序参考 locale，都没有时用英文。
+case "${AGENTS_ENV_SETUP_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}" in
+  zh* | ZH*) UI_LANG="zh-CN" ;;
+  *) UI_LANG="en" ;;
+esac
+readonly UI_LANG
+
+# 按界面语言输出一条文案（不自动换行）：$1 为 zh-CN 的 printf 格式串，$2 为 en 的格式串，其余为参数。
+# 格式串只写字面量，路径、名称等外部输入一律作为参数传入，避免其中的 % 被当作格式。
+msg() {
+  msg_zh_cn="$1"
+  msg_en="$2"
+  shift 2
+  # shellcheck disable=SC2059
+  if [ "$UI_LANG" = "zh-CN" ]; then printf "$msg_zh_cn" "$@"; else printf "$msg_en" "$@"; fi
+}
 
 readonly GITHUB_REPOSITORY="xianghongai/agents-env"
 readonly DEFAULT_GITHUB_BRANCH="main"
@@ -19,6 +40,15 @@ CR_CHAR="$(printf '\r')"
 LF_CHAR='
 '
 ESC_CHAR="$(printf '\033')"
+# 按键提示里的按键名着色，只用于写往终端的交互菜单。遵守 NO_COLOR，TERM 未设置或为 dumb 时同样不着色：
+# TERM 未设置时 Bash 会自行补成 dumb 而 Zsh 保持为空，两者都不着色才能行为一致。
+# 禁用时变量为空，同一个格式串即输出纯文本。
+KEY_ON=""
+KEY_OFF=""
+if [ -z "${NO_COLOR:-}" ] && [ -n "${TERM:-}" ] && [ "$TERM" != "dumb" ]; then
+  KEY_ON="$(printf '\033[1;36m')"
+  KEY_OFF="$(printf '\033[0m')"
+fi
 TAB_CHAR="$(printf '\t')"
 
 SCOPE=""
@@ -59,6 +89,63 @@ readonly PASSIVE_ACTIONS="skip-link skip-link-dir standard fetch-skip fallback b
 APPLIED=false
 
 print_usage() {
+  if [ "$UI_LANG" != "zh-CN" ]; then
+    cat <<'EOF'
+Usage: setup-skills.sh [options]
+
+Fetch Skills and link them into each agent as declared in the registry.
+Without --repo, only links.
+
+Options:
+      --scope <user|project>      Scope
+  -r, --repo <repository_url>     Source repository; any URL git can clone
+      --ref <branch|tag|commit>   Ref to fetch, default the repository's default branch
+      --path <subdir>             Look for Skills only in this subdirectory of the source; requires --repo
+      --skill <name>              Fetch only the named Skill; repeatable; requires --repo
+  -t, --target <dir>              Scope root. Defaults to $HOME for user, the current directory for project
+  -s, --source <dir>              Local checkout of this repository for the registry; downloaded if omitted
+      --branch <name>             Branch of this repository to download the registry from, default main
+      --dry-run                   Show the plan only; make no persistent changes
+  -y, --yes                       Skip the confirmation prompt; required without a terminal (for example, in CI)
+  -f, --force                     Replace same-named Skills (originals backed up outside the store); implies --yes
+  -h, --help                      Show this help and exit
+
+Behavior:
+  With no arguments, starts the interactive wizard. Any argument switches to
+  strict non-interactive mode.
+
+  Fetch: finds the Skills in the source repository and copies them into the
+        shared store incrementally.
+        A SKILL.md at the repository root makes the whole repository one Skill;
+        otherwise every subdirectory of skills/ that contains a SKILL.md is taken.
+        The installed name is the name field in the SKILL.md frontmatter, or the
+        directory name if it is missing.
+        New names are added; same names are skipped by default. With --force they
+        are replaced, and the original moves to <store>.local.bak/<name>, outside
+        the store so agents don't load it.
+        If the --path directory has a SKILL.md, only it is taken; otherwise its
+        immediate subdirectories that contain a SKILL.md. Use it for repositories
+        nested by category or not dedicated to Skills.
+        --skill filters by installed name; an unknown name fails before anything is written.
+
+  Link: only directories in the store that contain a SKILL.md are linked, using
+        the mode each agent declares per scope in the registry.
+        link-dir  Links the whole directory to the store. If the target is a real
+                  directory with other content, falls back to link-each so the
+                  agent's own Skills stay intact.
+        link-each Creates one symlink per item in the store. Broken symlinks into
+                  the store, left by renamed or deleted Skills, are removed.
+        none      Creates nothing, and removes stale symlinks into the store in that directory.
+
+Examples:
+  setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
+  setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
+  setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
+    --path skills/.curated --skill alpha-skill --skill beta-skill
+  setup-skills.sh --scope user --force
+EOF
+    return 0
+  fi
   cat <<'EOF'
 用法：setup-skills.sh [选项]
 
@@ -110,7 +197,7 @@ EOF
 
 fail() {
   restore_terminal_state
-  printf '错误：%s\n' "$1" >&2
+  msg '错误：%s\n' 'Error: %s\n' "$1" >&2
   exit 1
 }
 
@@ -136,14 +223,14 @@ trap cleanup EXIT
 require_value() {
   # $1 参数名，$2 取到的值
   if [ -z "${2:-}" ]; then
-    fail "${1} 需要一个值。使用 --help 查看用法。"
+    fail "$(msg '%s 需要一个值。使用 --help 查看用法。' '%s requires a value. See --help for usage.' "$1")"
   fi
 }
 
 reject_duplicate() {
   # $1 参数名，$2 当前值
   if [ -n "${2:-}" ]; then
-    fail "${1} 重复指定。"
+    fail "$(msg '%s 重复指定。' '%s was given more than once.' "$1")"
   fi
 }
 
@@ -220,7 +307,7 @@ parse_arguments() {
         exit 0
         ;;
       *)
-        fail "无法识别的参数：${1}。使用 --help 查看用法。"
+        fail "$(msg '无法识别的参数：%s。使用 --help 查看用法。' 'Unknown option: %s. See --help for usage.' "$1")"
         ;;
     esac
   done
@@ -228,7 +315,7 @@ parse_arguments() {
 
 validate_runtime_dependencies() {
   if ! command -v jq >/dev/null 2>&1; then
-    fail "未找到 jq。本脚本用 jq 解析 Agent 注册表，请先安装。"
+    fail "$(msg '未找到 %s。本脚本用它解析 Agent 注册表，请先安装。' '%s not found. This script uses it to parse the agent registry; install it first.' jq)"
   fi
 }
 
@@ -241,11 +328,14 @@ open_interactive_terminal() {
   if ! { exec 3<>/dev/tty; } 2>/dev/null; then
     # 非交互模式走到这里只可能是执行确认，引导用户跳过确认而不是改用非交互调用。
     if [ "$INTERACTIVE" = true ]; then
-      printf '当前环境没有可用的控制终端，无法进入交互模式。\n' >&2
-      printf '请改用非交互调用，例如：\n' >&2
+      msg '当前环境没有可用的控制终端，无法进入交互模式。\n' \
+        'No controlling terminal is available, so the interactive wizard cannot start.\n' >&2
+      msg '请改用非交互调用，例如：\n' 'Run it non-interactively instead, for example:\n' >&2
       printf '  setup-skills.sh --scope user\n' >&2
     else
-      printf '当前环境没有可用的控制终端，无法确认执行计划。请追加 --yes 跳过确认（--force 还会替换同名 Skill）。\n' >&2
+      msg '当前环境没有可用的控制终端，无法确认执行计划。请追加 %s 跳过确认（%s 还会替换同名 Skill）。\n' \
+        'No controlling terminal is available to confirm the plan. Add %s to skip the confirmation (%s also replaces same-named Skills).\n' \
+        --yes --force >&2
     fi
     exit 1
   fi
@@ -255,9 +345,9 @@ open_interactive_terminal() {
 # 交互菜单会改动终端属性；正常退出、失败和中断都必须还原，否则终端会停在无回显状态。
 enter_raw_mode() {
   TERMINAL_STATE_SAVED="$(stty -g <&3)" ||
-    fail "无法读取终端属性，请改用 --scope 非交互执行。"
+    fail "$(msg '无法读取终端属性，请改用 %s 非交互执行。' 'Cannot read the terminal settings. Run non-interactively with %s instead.' --scope)"
   stty -icanon -echo min 1 time 0 <&3 ||
-    fail "无法进入终端原始模式，请改用 --scope 非交互执行。"
+    fail "$(msg '无法进入终端原始模式，请改用 %s 非交互执行。' 'Cannot switch the terminal to raw mode. Run non-interactively with %s instead.' --scope)"
   PENDING_SIGNAL=""
   trap 'note_pending_signal INT' INT
   trap 'note_pending_signal TERM' TERM
@@ -274,7 +364,7 @@ handle_pending_signal() {
   [ -n "$received" ] || return 0
   PENDING_SIGNAL=""
   leave_raw_mode
-  printf '\n已取消。\n' >&3
+  msg '\n已取消。\n' '\nCancelled.\n' >&3
   case "$received" in
     INT) exit 130 ;;
     *) exit 143 ;;
@@ -405,7 +495,9 @@ run_single_choice_menu() {
 
   enter_raw_mode
   printf '\n%s\n' "$1" >&3
-  printf '  ↑↓ 或 j/k 移动，回车或空格确认，q 取消\n\n' >&3
+  # 着色序列不含 %，拼进格式串是安全的。
+  msg "  ${KEY_ON}↑↓${KEY_OFF} 或 ${KEY_ON}j/k${KEY_OFF} 移动，${KEY_ON}回车${KEY_OFF}或${KEY_ON}空格${KEY_OFF}确认，${KEY_ON}q${KEY_OFF} 取消\n\n" \
+    "  ${KEY_ON}↑↓${KEY_OFF} or ${KEY_ON}j/k${KEY_OFF} to move, ${KEY_ON}Enter${KEY_OFF} or ${KEY_ON}Space${KEY_OFF} to confirm, ${KEY_ON}q${KEY_OFF} to cancel\n\n" >&3
   while true; do
     if [ "$MENU_RENDERED_LINES" -gt 0 ]; then
       printf '\033[%dA\033[J' "$MENU_RENDERED_LINES" >&3
@@ -428,7 +520,7 @@ run_single_choice_menu() {
         ;;
       quit)
         leave_raw_mode
-        printf '\n已取消。\n' >&3
+        msg '\n已取消。\n' '\nCancelled.\n' >&3
         exit 0
         ;;
     esac
@@ -444,7 +536,7 @@ confirm_default_yes() {
   REPLY_VALUE=""
   printf '%s [Y/n] ' "$1" >&3
   if ! IFS= read -r REPLY_VALUE <&3; then
-    printf '\n已取消。\n' >&3
+    msg '\n已取消。\n' '\nCancelled.\n' >&3
     exit 1
   fi
   case "$REPLY_VALUE" in
@@ -457,23 +549,26 @@ confirm_default_yes() {
 # Agent 选择必须在其之后：选项来自注册表。两者因此分成两个阶段。
 collect_interactive_scope() {
   open_interactive_terminal
-  printf '获取 Skills 并按注册表声明为各 Agent 建立软链。\n' >&3
-  run_single_choice_menu "选择安装范围" "user    当前用户（写入用户目录）
-project 当前项目（写入项目根目录）"
+  msg '获取 Skills 并按注册表声明为各 Agent 建立软链。\n' \
+    'Fetch Skills and link them into each agent as declared in the registry.\n' >&3
+  run_single_choice_menu "$(msg '选择安装范围' 'Choose the scope')" "$(msg 'user    当前用户（写入用户目录）
+project 当前项目（写入项目根目录）' 'user    Current user (writes to your home directory)
+project Current project (writes to the project root)')"
   case "$MENU_CURSOR" in
     0) SCOPE="user" ;;
     *) SCOPE="project" ;;
   esac
-  printf '已选择：%s\n' "$SCOPE" >&3
+  msg '已选择：%s\n' 'Selected: %s\n' "$SCOPE" >&3
 
-  printf '\n来源仓库地址（留空则跳过获取，只做软链）：' >&3
+  msg '\n来源仓库地址（留空则跳过获取，只做软链）：' \
+    '\nSource repository URL (leave empty to skip fetching and only link): ' >&3
   if ! IFS= read -r REPLY_VALUE <&3; then
-    printf '\n已取消。\n' >&3
+    msg '\n已取消。\n' '\nCancelled.\n' >&3
     exit 1
   fi
   REPO="$REPLY_VALUE"
   if [ -n "$REPO" ]; then
-    printf '分支或标签（留空用默认分支）：' >&3
+    msg '分支或标签（留空用默认分支）：' 'Branch or tag (leave empty for the default branch): ' >&3
     IFS= read -r REPLY_VALUE <&3 || REPLY_VALUE=""
     REPO_REF="$REPLY_VALUE"
   fi
@@ -482,24 +577,24 @@ project 当前项目（写入项目根目录）"
 validate_scope() {
   case "$SCOPE" in
     user | project) ;;
-    "") fail "缺少 --scope。使用 --help 查看用法。" ;;
-    *) fail "--scope 只能是 user 或 project，收到：${SCOPE}" ;;
+    "") fail "$(msg '缺少 %s。使用 --help 查看用法。' 'Missing %s. See --help for usage.' --scope)" ;;
+    *) fail "$(msg '%s 只能是 user 或 project，收到：%s' '%s must be user or project, got: %s' --scope "$SCOPE")" ;;
   esac
 }
 
 # 只校验字面形态，目录是否存在要等克隆之后才知道。放在任何副作用之前。
 validate_repo_options() {
   if [ -z "$REPO" ]; then
-    [ -z "$REPO_SUBPATH" ] || fail "--path 需要配合 --repo 使用。"
-    [ -z "$SKILL_FILTER" ] || fail "--skill 需要配合 --repo 使用。"
+    [ -z "$REPO_SUBPATH" ] || fail "$(msg '%s 需要配合 %s 使用。' '%s requires %s.' --path --repo)"
+    [ -z "$SKILL_FILTER" ] || fail "$(msg '%s 需要配合 %s 使用。' '%s requires %s.' --skill --repo)"
     return 0
   fi
   [ -n "$REPO_SUBPATH" ] || return 0
   # 前后各补一个斜杠，任意位置的 . 与 .. 段都能用同一组模式命中。
   case "/${REPO_SUBPATH}/" in
-    //*) fail "--path 必须是仓库内的相对路径，收到：${REPO_SUBPATH}" ;;
-    */../* | */./*) fail "--path 不能包含 . 或 .. 段，收到：${REPO_SUBPATH}" ;;
-    *"$TAB_CHAR"*) fail "--path 不能包含制表符。" ;;
+    //*) fail "$(msg '%s 必须是仓库内的相对路径，收到：%s' '%s must be a relative path inside the repository, got: %s' --path "$REPO_SUBPATH")" ;;
+    */../* | */./*) fail "$(msg '%s 不能包含 . 或 .. 段，收到：%s' '%s must not contain . or .. segments, got: %s' --path "$REPO_SUBPATH")" ;;
+    *"$TAB_CHAR"*) fail "$(msg '%s 不能包含制表符。' '%s must not contain tab characters.' --path)" ;;
   esac
   while true; do
     case "$REPO_SUBPATH" in
@@ -517,7 +612,7 @@ resolve_target_root() {
       TARGET_ROOT="$PWD"
     fi
   fi
-  [ -d "$TARGET_ROOT" ] || fail "目标目录不存在：${TARGET_ROOT}"
+  [ -d "$TARGET_ROOT" ] || fail "$(msg '目标目录不存在：%s' 'Target directory does not exist: %s' "$TARGET_ROOT")"
   TARGET_ROOT="$(cd "$TARGET_ROOT" && pwd)"
 }
 
@@ -526,11 +621,12 @@ download_resource() {
   url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_BRANCH}/$1"
   mkdir -p "$(dirname "$2")"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$2" || fail "下载失败：${url}"
+    curl -fsSL "$url" -o "$2" || fail "$(msg '下载失败：%s' 'Download failed: %s' "$url")"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$url" || fail "下载失败：${url}"
+    wget -qO "$2" "$url" || fail "$(msg '下载失败：%s' 'Download failed: %s' "$url")"
   else
-    fail "未找到 curl 或 wget，无法获取资源。可改用 --source 指定本地检出。"
+    fail "$(msg '未找到 curl 或 wget，无法获取资源。可改用 %s 指定本地检出。' \
+      'Neither curl nor wget found, so resources cannot be downloaded. Use %s to point to a local checkout.' --source)"
   fi
 }
 
@@ -556,16 +652,17 @@ resolve_resources() {
     SOURCE_DIRECTORY="$(default_source_directory)"
   fi
   if [ -n "$SOURCE_DIRECTORY" ]; then
-    [ -d "$SOURCE_DIRECTORY" ] || fail "--source 目录不存在：${SOURCE_DIRECTORY}"
+    [ -d "$SOURCE_DIRECTORY" ] ||
+      fail "$(msg '%s 目录不存在：%s' '%s directory does not exist: %s' --source "$SOURCE_DIRECTORY")"
     RESOURCE_DIRECTORY="$(cd "$SOURCE_DIRECTORY" && pwd)"
-    RESOURCE_SOURCE_LABEL="本地检出 ${RESOURCE_DIRECTORY}"
+    RESOURCE_SOURCE_LABEL="$(msg '本地检出 %s' 'local checkout %s' "$RESOURCE_DIRECTORY")"
     [ -f "${RESOURCE_DIRECTORY}/config/agents.json" ] ||
-      fail "--source 目录下缺少 config/agents.json：${RESOURCE_DIRECTORY}"
+      fail "$(msg '%s 目录下缺少 %s：%s' '%s directory has no %s: %s' --source config/agents.json "$RESOURCE_DIRECTORY")"
     return 0
   fi
 
   WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/setup-skills.XXXXXX")" ||
-    fail "无法创建临时目录。"
+    fail "$(msg '无法创建临时目录。' 'Cannot create a temporary directory.')"
   RESOURCE_DIRECTORY="$WORK_DIRECTORY"
   RESOURCE_SOURCE_LABEL="GitHub ${GITHUB_REPOSITORY}@${GITHUB_BRANCH}"
   download_resource "config/agents.json" "${RESOURCE_DIRECTORY}/config/agents.json"
@@ -576,15 +673,16 @@ registry_file() {
 }
 
 validate_registry() {
-  jq -e . "$(registry_file)" >/dev/null 2>&1 || fail "注册表不是合法 JSON：$(registry_file)"
+  jq -e . "$(registry_file)" >/dev/null 2>&1 ||
+    fail "$(msg '注册表不是合法 JSON：%s' 'The registry is not valid JSON: %s' "$(registry_file)")"
   invalid_mode="$(jq -r --arg scope "$SCOPE" '
     [.agents | to_entries[] | select((.value.skills.scope[$scope].mode // "") | IN("link-dir","link-each","none") | not) | .key] | join(", ")
   ' "$(registry_file)")"
   if [ -n "$invalid_mode" ]; then
-    fail "注册表中以下 Agent 的 skills.scope.${SCOPE}.mode 非法：${invalid_mode}"
+    fail "$(msg '注册表中以下 Agent 的 %s 非法：%s' 'Invalid %s for these agents in the registry: %s' "skills.scope.${SCOPE}.mode" "$invalid_mode")"
   fi
   SKILLS_ROOT="$(jq -r --arg scope "$SCOPE" '.shared.skills_root[$scope] // ""' "$(registry_file)")"
-  [ -n "$SKILLS_ROOT" ] || fail "注册表缺少 shared.skills_root.${SCOPE}。"
+  [ -n "$SKILLS_ROOT" ] || fail "$(msg '注册表缺少 %s。' 'The registry is missing %s.' "shared.skills_root.${SCOPE}")"
   # 备份放在共享库的兄弟目录：放在库内会被原生读取共享库或整目录软链的 Agent 当成同名 Skill。
   BACKUP_ROOT="${SKILLS_ROOT%/}.local.bak"
 }
@@ -610,14 +708,15 @@ relative_to_skills_root() {
 }
 
 clone_repository() {
-  command -v git >/dev/null 2>&1 || fail "未找到 git。获取远程 Skills 需要 git，或省略 --repo 只做软链。"
+  command -v git >/dev/null 2>&1 ||
+    fail "$(msg '未找到 %s。获取远程 Skills 需要它，或省略 %s 只做软链。' '%s not found. Fetching remote Skills requires it; omit %s to only link.' git --repo)"
   CLONE_DIRECTORY="${WORK_DIRECTORY}/clone"
   if [ -n "$REPO_REF" ]; then
     git clone --depth 1 --branch "$REPO_REF" -- "$REPO" "$CLONE_DIRECTORY" >/dev/null 2>&1 ||
-      fail "克隆失败：${REPO}（ref=${REPO_REF}）"
+      fail "$(msg '克隆失败：%s（ref=%s）' 'Clone failed: %s (ref=%s)' "$REPO" "$REPO_REF")"
   else
     git clone --depth 1 -- "$REPO" "$CLONE_DIRECTORY" >/dev/null 2>&1 ||
-      fail "克隆失败：${REPO}"
+      fail "$(msg '克隆失败：%s' 'Clone failed: %s' "$REPO")"
   fi
   discover_skills
 }
@@ -655,12 +754,12 @@ discover_skills() {
   if [ -n "$REPO_SUBPATH" ]; then
     scan_root="${CLONE_DIRECTORY}/${REPO_SUBPATH}"
     container_relpath="$REPO_SUBPATH"
-    [ -d "$scan_root" ] || fail "来源仓库中不存在目录：${REPO_SUBPATH}"
+    [ -d "$scan_root" ] || fail "$(msg '来源仓库中不存在目录：%s' 'No such directory in the source repository: %s' "$REPO_SUBPATH")"
     # 仓库里的软链可能指向克隆之外，按物理路径确认仍在仓库内。
     clone_physical="$(cd "$CLONE_DIRECTORY" && pwd -P)"
     case "$(cd "$scan_root" && pwd -P)/" in
       "${clone_physical}/"*) ;;
-      *) fail "--path 解析后位于来源仓库之外：${REPO_SUBPATH}" ;;
+      *) fail "$(msg '%s 解析后位于来源仓库之外：%s' '%s resolves outside the source repository: %s' --path "$REPO_SUBPATH")" ;;
     esac
   fi
 
@@ -687,21 +786,25 @@ discover_skills() {
 
   if [ ! -s "$discovered" ]; then
     if [ -n "$REPO_SUBPATH" ]; then
-      fail "${REPO_SUBPATH} 下没有找到 Skill：它自身没有 SKILL.md，直接子目录中也没有含 SKILL.md 的。"
+      fail "$(msg '%s 下没有找到 Skill：它自身没有 SKILL.md，直接子目录中也没有含 SKILL.md 的。' \
+        'No Skill found in %s: it has no SKILL.md, and none of its immediate subdirectories has one.' "$REPO_SUBPATH")"
     fi
-    fail "来源仓库中没有找到 Skill。可识别的形态：根下直接有 SKILL.md（单 Skill），或 skills/<名称>/SKILL.md（多 Skill）；其它位置用 --path 指定。"
+    fail "$(msg '来源仓库中没有找到 Skill。可识别的形态：根下直接有 SKILL.md（单 Skill），或 skills/<名称>/SKILL.md（多 Skill）；其它位置用 %s 指定。' \
+      'No Skill found in the source repository. Recognized layouts: SKILL.md at the root (one Skill), or skills/<name>/SKILL.md (several Skills); use %s for other locations.' --path)"
   fi
 
   # 名称会成为共享库里的目录名并写进计划行，校验必须在任何落盘之前完成。
   while IFS="$TAB_CHAR" read -r name source_relpath; do
     case "$name" in
       "" | .* | *[!A-Za-z0-9._-]* | *.local.bak)
-        fail "Skill 名称不合法：「${name}」（来源 ${source_relpath}）。名称只能含字母、数字、点、下划线和连字符，且不以点开头。"
+        fail "$(msg 'Skill 名称不合法：「%s」（来源 %s）。名称只能含字母、数字、点、下划线和连字符，且不以点开头。' \
+          'Invalid Skill name "%s" (from %s). Names may contain only letters, digits, dots, underscores and hyphens, and must not start with a dot.' \
+          "$name" "$source_relpath")"
         ;;
     esac
   done <"$discovered"
   duplicated="$(cut -f1 "$discovered" | sort | uniq -d | tr '\n' ' ')"
-  [ -z "$duplicated" ] || fail "来源仓库中存在同名 Skill：${duplicated}"
+  [ -z "$duplicated" ] || fail "$(msg '来源仓库中存在同名 Skill：%s' 'Duplicate Skill names in the source repository: %s' "$duplicated")"
 
   filter_skills
 }
@@ -713,7 +816,8 @@ filter_skills() {
   missing="$(awk -F "$TAB_CHAR" 'NR == FNR { have[$1] = 1; next } !($1 in have)' \
     "$discovered" "${WORK_DIRECTORY}/wanted" | tr '\n' ' ')"
   if [ -n "$missing" ]; then
-    fail "来源中没有这些 Skill：${missing}。可选名称：$(cut -f1 "$discovered" | sort | tr '\n' ' ')"
+    fail "$(msg '来源中没有这些 Skill：%s。可选名称：%s' 'These Skills are not in the source: %s. Available names: %s' \
+      "$missing" "$(cut -f1 "$discovered" | sort | tr '\n' ' ')")"
   fi
   awk -F "$TAB_CHAR" 'NR == FNR { keep[$1] = 1; next } $1 in keep' \
     "${WORK_DIRECTORY}/wanted" "$discovered" >"${discovered}.filtered"
@@ -732,11 +836,12 @@ plan_fetch() {
   while IFS="$TAB_CHAR" read -r name source_relpath; do
     [ -n "$name" ] || continue
     if [ ! -e "${dest_root}/${name}" ]; then
-      add_plan "fetch-new" "$name" "${SKILLS_ROOT}/${name}" "新增"
+      add_plan "fetch-new" "$name" "${SKILLS_ROOT}/${name}" ""
     elif [ "$FORCE" = true ]; then
-      add_plan "fetch-replace" "$name" "${SKILLS_ROOT}/${name}" "同名替换，原件备份到 ${BACKUP_ROOT}/${name}"
+      add_plan "fetch-replace" "$name" "${SKILLS_ROOT}/${name}" \
+        "$(msg '同名替换，原件备份到 %s' 'original backed up to %s' "${BACKUP_ROOT}/${name}")"
     else
-      add_plan "fetch-skip" "$name" "${SKILLS_ROOT}/${name}" "同名已存在，--force 才替换"
+      add_plan "fetch-skip" "$name" "${SKILLS_ROOT}/${name}" ""
     fi
   done <"${WORK_DIRECTORY}/discovered"
 }
@@ -767,9 +872,11 @@ plan_legacy_backups() {
     name="$(basename "$item")"
     name="${name%.local.bak}"
     if [ -e "${TARGET_ROOT}/${BACKUP_ROOT}/${name}" ]; then
-      add_plan "blocked-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" "${BACKUP_ROOT}/${name} 已存在，请手动处理"
+      add_plan "blocked-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" \
+        "$(msg '%s 已存在，请手动处理' '%s already exists; resolve it manually' "${BACKUP_ROOT}/${name}")"
     else
-      add_plan "move-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" "移到 ${BACKUP_ROOT}/${name}"
+      add_plan "move-bak" "$name" "${SKILLS_ROOT}/${name}.local.bak" \
+        "$(msg '移到 %s' 'move to %s' "${BACKUP_ROOT}/${name}")"
     fi
   done <"${WORK_DIRECTORY}/legacy"
 }
@@ -803,12 +910,13 @@ plan_link_each() {
     want="$(relative_to_skills_root "$2/${name}")/${name}"
     if [ -L "$link_path" ]; then
       if [ "$(readlink "$link_path")" = "$want" ]; then
-        add_plan "skip-link" "$1" "$2/${name}" "已软链"
+        add_plan "skip-link" "$1" "$2/${name}" ""
       else
-        add_plan "relink" "$1" "$2/${name}" "改指向 ${want}"
+        add_plan "relink" "$1" "$2/${name}" "$(msg '改指向 %s' 'point to %s' "$want")"
       fi
     elif [ -e "$link_path" ]; then
-      add_plan "blocked-link" "$1" "$2/${name}" "同名实体存在，不覆盖"
+      add_plan "blocked-link" "$1" "$2/${name}" \
+        "$(msg '同名实体存在，不覆盖' 'a real file or directory with this name exists; not replaced')"
     else
       add_plan "link-each" "$1" "$2/${name}" "-> ${want}"
     fi
@@ -838,7 +946,7 @@ plan_stale_links() {
       *.local.bak) ;;
       *) [ -f "${candidate}/SKILL.md" ] && continue ;;
     esac
-    add_plan "prune-stale" "$1" "$2/${name}" "共享库中已无此 Skill，失效软链"
+    add_plan "prune-stale" "$1" "$2/${name}" ""
   done <"${WORK_DIRECTORY}/links"
 }
 
@@ -851,7 +959,7 @@ plan_link() {
     skills_path="$(agent_field "$agent_id" ".skills.scope[\$scope].path")"
     skills_mode="$(agent_field "$agent_id" ".skills.scope[\$scope].mode")"
     if [ "$skills_path" = "standard" ]; then
-      add_plan "standard" "$display_name" "$SKILLS_ROOT" "原生读取共享库，无需软链"
+      add_plan "standard" "$display_name" "$SKILLS_ROOT" ""
       continue
     fi
     [ -n "$skills_path" ] || continue
@@ -862,12 +970,13 @@ plan_link() {
         want="$(relative_to_skills_root "$skills_path")"
         if [ -L "$link_path" ]; then
           if [ "$(readlink "$link_path")" = "$want" ]; then
-            add_plan "skip-link-dir" "$display_name" "$skills_path" "整个目录已软链"
+            add_plan "skip-link-dir" "$display_name" "$skills_path" ""
           else
-            add_plan "relink-dir" "$display_name" "$skills_path" "改指向 ${want}"
+            add_plan "relink-dir" "$display_name" "$skills_path" "$(msg '改指向 %s' 'point to %s' "$want")"
           fi
         elif has_foreign_content "$link_path"; then
-          add_plan "fallback" "$display_name" "$skills_path" "目录内有其它内容，回退为逐项软链"
+          add_plan "fallback" "$display_name" "$skills_path" \
+            "$(msg '目录内有其它内容，回退为逐项软链' 'directory has other content; linking each item instead')"
           plan_link_each "$display_name" "$skills_path"
         else
           add_plan "link-dir" "$display_name" "$skills_path" "-> ${want}"
@@ -883,7 +992,8 @@ plan_link() {
             [ -n "$candidate" ] || continue
             case "$(readlink "$candidate")" in
               *"$SKILLS_ROOT"*)
-                add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" "注册表声明不建链"
+                add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" \
+                  "$(msg '注册表声明不建链' 'registry declares no links')"
                 ;;
             esac
           done <"${WORK_DIRECTORY}/stale"
@@ -904,18 +1014,24 @@ selected_agent_ids() {
 }
 
 print_context() {
-  info "范围：${SCOPE}    目标：${TARGET_ROOT}"
-  info "注册表：${RESOURCE_SOURCE_LABEL}    共享库：${SKILLS_ROOT}"
+  msg '范围：%s    目标：%s\n' 'Scope: %s    Target: %s\n' "$SCOPE" "$TARGET_ROOT"
+  msg '注册表：%s    共享库：%s\n' 'Registry: %s    Store: %s\n' "$RESOURCE_SOURCE_LABEL" "$SKILLS_ROOT"
   # 不能写成 [ -n ... ] && info ...：条件为假时函数以非零状态返回，会被 set -e 杀掉。
   if [ -n "$REPO" ]; then
-    info "来源仓库：${REPO}${REPO_REF:+ @${REPO_REF}}${REPO_SUBPATH:+    子目录：${REPO_SUBPATH}}"
+    msg '来源仓库：%s%s' 'Source: %s%s' "$REPO" "${REPO_REF:+ @${REPO_REF}}"
+    if [ -n "$REPO_SUBPATH" ]; then
+      msg '    子目录：%s' '    Subdirectory: %s' "$REPO_SUBPATH"
+    fi
+    printf '\n'
   fi
 }
 
 # 计划分层展示：已就绪的只按目录汇总条数，要执行、要清理、需注意的逐条列出。
 # 多个 Agent 共用同一目录时，同一动作同一路径只列一行，Agent 名合并展示。
 print_plan() {
-  printf '%s' "$PLAN" | awk -F'|' -v passive=" $PASSIVE_ACTIONS " '
+  printf '%s' "$PLAN" | awk -F'|' -v passive=" $PASSIVE_ACTIONS " -v lang="$UI_LANG" '
+    # 与 Shell 侧的 msg 同理：两种语言并排写在调用处。
+    function t(zh_cn, en) { return (lang == "zh-CN") ? zh_cn : en }
     function dir_of(p) { sub(/\/[^\/]*$/, "", p); return p }
     function base_of(p) { sub(/^.*\//, "", p); return p }
     function add_who(k, who) {
@@ -927,17 +1043,18 @@ print_plan() {
     }
     function widen(text) { if (length(text) > width) width = length(text) }
     # 动作编码只供内部流转，展示时换成读者能直接看懂的说法。
-    # 同一节内的标签保持等宽：awk 按字节计宽，中文标签对不齐，所以标签放在已对齐的路径之后。
+    # 同一节内的标签在同一语言内等宽，英文靠尾随空格补齐：awk 按字节计宽，
+    # 中文标签对不齐，所以标签放在已对齐的路径之后。
     function label_of(act) {
-      if (act == "link-each" || act == "link-dir") return "新建软链"
-      if (act == "relink" || act == "relink-dir") return "修正软链"
-      if (act == "move-bak") return "迁出备份"
-      if (act == "prune-stale") return "失效软链"
-      if (act == "prune-link") return "冗余软链"
-      if (act == "fetch-new") return "新增"
-      if (act == "fetch-replace") return "替换"
-      if (act == "fallback") return "回退"
-      if (act == "blocked-link" || act == "blocked-bak") return "跳过"
+      if (act == "link-each" || act == "link-dir") return t("新建软链", "new link")
+      if (act == "relink" || act == "relink-dir") return t("修正软链", "fix link")
+      if (act == "move-bak") return t("迁出备份", "move out")
+      if (act == "prune-stale") return t("失效软链", "stale link")
+      if (act == "prune-link") return t("冗余软链", "extra link")
+      if (act == "fetch-new") return t("新增", "new    ")
+      if (act == "fetch-replace") return t("替换", "replace")
+      if (act == "fallback") return t("回退", "fallback")
+      if (act == "blocked-link" || act == "blocked-bak") return t("跳过", "skip    ")
       return act
     }
     $1 == "" { next }
@@ -973,8 +1090,8 @@ print_plan() {
         rows[section, ++row_total[section]] = k
         row_act[k] = act
         row_entry[k] = entry
-        # 说明与标签重复时不展示：新建类的指向可由路径推导，失效软链的原因标签已说清。
-        row_detail[k] = (act == "link-each" || act == "link-dir" || act == "fetch-new" || act == "prune-stale") ? "" : detail
+        # 说明与标签重复时不展示：新建类的指向可由路径推导。
+        row_detail[k] = (act == "link-each" || act == "link-dir") ? "" : detail
         widen(entry)
       }
       # 获取阶段的名称就是路径末段，不再重复。
@@ -982,31 +1099,33 @@ print_plan() {
     }
     function print_rows(section, title,    i, k, tail) {
       if (row_total[section] == 0) return
-      printf "\n%s（%d）\n", title, row_total[section]
+      printf "\n%s\n", sprintf(title, row_total[section])
       for (i = 1; i <= row_total[section]; i++) {
         k = rows[section, i]
         tail = label_of(row_act[k])
         if (k in who_list) tail = tail "  " who_list[k]
         if (row_detail[k] != "") tail = tail "  " row_detail[k]
+        # 英文标签的补齐空格落在行尾时去掉。
+        sub(/ +$/, "", tail)
         printf "  %-" width "s  %s\n", row_entry[k], tail
       }
     }
     END {
       if (ready_total > 0) {
-        printf "\n已就绪\n"
+        printf "\n%s\n", t("已就绪", "Ready")
         for (i = 1; i <= ready_total; i++) {
           rk = ready_order[i]
           act = ready_act[rk]
-          if (act == "skip-link") summary = ready_count[rk] " 项已软链"
-          else if (act == "skip-link-dir") summary = "整个目录已软链"
-          else if (act == "standard") summary = "原生读取共享库"
-          else summary = ready_count[rk] " 项同名已存在，--force 才替换"
-          printf "  %-" width "s  %s：%s\n", ready_key[rk], summary, who_list[rk]
+          if (act == "skip-link") summary = sprintf(t("%d 项已软链", "%d linked"), ready_count[rk])
+          else if (act == "skip-link-dir") summary = t("整个目录已软链", "whole directory linked")
+          else if (act == "standard") summary = t("原生读取共享库", "reads the store natively")
+          else summary = sprintf(t("%d 项同名已存在，--force 才替换", "%d already exist; --force replaces them"), ready_count[rk])
+          printf "  %-" width "s  %s%s%s\n", ready_key[rk], summary, t("：", ": "), who_list[rk]
         }
       }
-      print_rows("change", "即将执行")
-      print_rows("prune", "即将清理")
-      print_rows("note", "需注意")
+      print_rows("change", t("即将执行（%d）", "To apply (%d)"))
+      print_rows("prune", t("即将清理（%d）", "To clean up (%d)"))
+      print_rows("note", t("需注意（%d）", "Needs attention (%d)"))
     }
   '
   info ""
@@ -1076,7 +1195,7 @@ apply_plan() {
 
 print_summary() {
   if [ "$APPLIED" = true ]; then
-    info "完成。"
+    info "$(msg '完成。' 'Done.')"
   fi
 }
 
@@ -1087,7 +1206,7 @@ run_phase() {
   PLAN=""
   "$2"
   if [ -z "$PLAN" ]; then
-    info "[$1] 没有需要处理的项。"
+    info "$(msg '[%s] 没有需要处理的项。' '[%s] Nothing to process.' "$1")"
     return 0
   fi
   info "[$1]"
@@ -1096,11 +1215,11 @@ run_phase() {
     return 0
   fi
   if ! plan_has_changes; then
-    info "[$1] 无需改动。"
+    info "$(msg '[%s] 无需改动。' '[%s] Nothing to change.' "$1")"
     return 0
   fi
-  if ! confirm_default_yes "是否继续？"; then
-    info "[$1] 已跳过。"
+  if ! confirm_default_yes "$(msg '是否继续？' 'Continue?')"; then
+    info "$(msg '[%s] 已跳过。' '[%s] Skipped.' "$1")"
     return 0
   fi
   apply_plan
@@ -1120,22 +1239,22 @@ main() {
 
   if [ -z "$WORK_DIRECTORY" ]; then
     WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/setup-skills.XXXXXX")" ||
-      fail "无法创建临时目录。"
+      fail "$(msg '无法创建临时目录。' 'Cannot create a temporary directory.')"
   fi
 
   print_context
 
   if [ -n "$REPO" ]; then
     clone_repository
-    run_phase "获取" plan_fetch
+    run_phase "$(msg '获取' 'Fetch')" plan_fetch
   fi
 
   # 软链阶段读取共享库的真实内容。获取阶段若被跳过或取消，这里看到的就是
   # 未变的现状：两个阶段解耦，随时可以只跑其中一个。
-  run_phase "软链" plan_link
+  run_phase "$(msg '软链' 'Link')" plan_link
 
   if [ "$DRY_RUN" = true ]; then
-    info "--dry-run：未做任何修改。"
+    info "$(msg '%s：未做任何修改。' '%s: no changes made.' --dry-run)"
     exit 0
   fi
   print_summary

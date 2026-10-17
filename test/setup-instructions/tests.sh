@@ -10,6 +10,8 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 SCRIPT_UNDER_TEST="${WORKSPACE}/setup-instructions.sh"
 REGISTRY="${WORKSPACE}/config/agents.json"
 SHELL_BIN="${TEST_SHELL:-bash}"
+# 界面语言固定为 zh-CN：按报错文字区分拦截原因的用例因此不受容器 locale 影响。
+export AGENTS_ENV_SETUP_LANG=zh-CN
 PASS=0
 FAIL=0
 
@@ -279,6 +281,12 @@ else
 fi
 printf '%s' "$out8" | grep -q 'twins/ENTRY.md' && ok "报错指出冲突的入口" || bad "报错未指出冲突入口"
 [ "$before8" = "$(find "$H8" | sort | md5sum)" ] && ok "冲突时无副作用" || bad "冲突时产生了副作用"
+
+head_ "界面语言不影响写入内容"
+# 入口文件若随语言变化，不同 locale 的人轮流执行会互相覆盖并产生备份。
+H9="$(mktemp -d /tmp/fakehome.XXXXXX)"
+AGENTS_ENV_SETUP_LANG=en run --scope user --source "$SAME" --target "$H9" --force >/dev/null 2>&1
+cmp -s "$H7/twins/ENTRY.md" "$H9/twins/ENTRY.md" && ok "英文界面写入的内容与中文一致" || bad "写入内容随界面语言变化"
 
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
