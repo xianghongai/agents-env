@@ -32,13 +32,13 @@ agents-env 把「各 Agent 读哪里、用什么方式接入」写进注册表 `
 
 ## 核心特性
 
-- 🛡️ **不覆盖实体**：Agent 目录里的同名实体目录一律跳过并报告，不覆盖。所有校验都在落盘之前完成，失败时不留半成品。
-- ↩️ **改动可回退**：`--force` 替换 Skill 时，原件移到共享库之外的 `<共享库>.local.bak/`；入口文件内容不同时先备份为 `<文件名>.local.bak`。后缀命中常见 `.gitignore` 中的 `*.local.*` 规则，不会混进 `git status`。
-- 🔗 **相对软链**：整体移动目录后链接依然有效。
-- 📜 **完全声明式**：Agent 的路径与接入方式只写在注册表里，脚本流程中没有任何厂商特例。新增 Agent 只改注册表，具体做法见 [注册表维护指南](config/README.md)。
-- ⚡ **依赖轻**：单文件 Shell 脚本，兼容 Bash 3.2+ 与 Zsh，可 `curl | bash` 直接运行，不需要 Node.js 或 Python。运行时需要 `jq`；获取 Skills 需要 `git`；管道运行需要 `curl` 或 `wget`。
+- **不覆盖用户的东西**：Agent 目录里的同名实体目录、指向共享库之外的同名软链，一律跳过并报告，不覆盖。所有校验都在落盘之前完成，失败时不留半成品。
+- **改动可回退**：`--force` 替换 Skill 时，原件移到共享库之外的 `<共享库>.local.bak/`；入口文件内容不同时先备份为 `<文件名>.local.bak`。后缀命中常见 `.gitignore` 中的 `*.local.*` 规则，不会混进 `git status`。
+- **相对软链**：整体移动目录后链接依然有效。
+- **完全声明式**：Agent 的路径与接入方式只写在注册表里，脚本流程中没有任何厂商特例。新增 Agent 只改注册表，具体做法见 [注册表维护指南](config/README.md)。
+- **单文件、可管道执行**：每个脚本自包含，兼容 Bash 3.2+ 与 Zsh，可 `curl | bash` 直接运行，不需要 Node.js 或 Python。依赖见 [环境要求](#环境要求)。
 
-## 两种范围
+## 范围
 
 | | 用户级 `--scope user` | 项目级 `--scope project` |
 | :--- | :--- | :--- |
@@ -48,6 +48,17 @@ agents-env 把「各 Agent 读哪里、用什么方式接入」写进注册表 `
 | 软链方式 | 由注册表为每个 Agent 声明 | 由注册表为每个 Agent 声明 |
 
 共享库位置由注册表的 `shared.skills_root` 声明，并非脚本内置。
+
+## 环境要求
+
+| 依赖 | 何时需要 |
+| :--- | :--- |
+| Bash 3.2+ 或 Zsh | 总是 |
+| `jq` | 总是，用于读取注册表 |
+| `git` | `setup-skills.sh` 带 `--repo` 获取 Skill 时 |
+| `curl` 或 `wget` | 不在本仓库的检出中运行时（例如 `curl \| bash`），用于下载注册表与模板 |
+
+在本仓库的检出中运行，或用 `--source` 指向一份检出时，脚本直接使用本地文件，不联网。
 
 ---
 
@@ -68,14 +79,6 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 ```
 
 脚本执行前会先列出完整计划，确认后才动手。
-
-### 输出语言
-
-两个脚本都支持英文和简体中文输出。语言依次参考 `AGENTS_ENV_SETUP_LANG`（取值 `en` 或 `zh-CN`）、`LC_ALL`、`LC_MESSAGES`、`LANG`，取值以 `zh` 开头即输出中文。都未设置时（如 cron、`env -i`）输出英文。语言只影响终端输出，写入的入口文件内容与语言无关。
-
-```bash
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | AGENTS_ENV_SETUP_LANG=en bash
-```
 
 ---
 
@@ -110,11 +113,38 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 
 注册表为每个 Agent 的每个范围各自声明一个 `mode`：
 
-| mode | 动作 |
+| mode | 作用 |
 | :--- | :--- |
-| `link-dir` | 整个目录软链到共享库；目标已是含其它内容的实体目录时，自动回退为 `link-each`，不破坏该 Agent 自带的 Skills |
-| `link-each` | 为共享库中的每个 Skill 各建一条软链，与 Agent 自带的 Skills 共存；共享库中的 Skill 改名或删除后，指向它的失效软链在下次运行时清理（只删软链，不删目录） |
-| `none` | 不建链接，并清理该目录下指向共享库的冗余软链（只删软链，不删目录） |
+| `link-dir` | 把 Agent 的整个 Skills 目录软链到共享库 |
+| `link-each` | 为共享库中的每个 Skill 各建一条软链，与 Agent 自带的 Skills 共存 |
+| `none` | 不建链接，并清理该目录下指向共享库的软链 |
+
+软链阶段只处理共享库中含 `SKILL.md` 的目录。下面按 Agent 目录中已有的内容，列出各种情况的结果。表中的「跳过」都会列在计划的「需注意」中，`--force` 也不会覆盖。
+
+`link-each` 以共享库中的每个 Skill 名称为单位：
+
+| 同名现状 | 结果 |
+| :--- | :--- |
+| 没有 | 新建相对软链 |
+| 指向共享库的正确相对软链 | 不动 |
+| 指向共享库，但路径写法不同（如绝对路径） | 改为正确的相对软链 |
+| 指向共享库之外的软链，无论是否有效 | 跳过 |
+| 实体目录或文件 | 跳过 |
+
+此外，Agent 目录中指向共享库、但已解析不到 Skill 的软链（Skill 改名或删除后留下的）会被删除。别名软链只要还能解析到 Skill 就保留。其它条目一概不动，例如 Agent 自带的 Skill 和指向别处的软链。
+
+`link-dir` 以 Agent 的 Skills 目录整体为单位：
+
+| 该目录现状 | 结果 |
+| :--- | :--- |
+| 不存在 | 新建整目录相对软链 |
+| 指向共享库的正确相对软链 | 不动 |
+| 指向共享库，但路径写法不同 | 改为正确的相对软链 |
+| 指向共享库之外的软链 | 跳过，也不往目录里建链 |
+| 实体目录，为空或只含指向共享库的软链 | 删除这些软链和空目录，换成整目录软链 |
+| 实体目录，含其它内容 | 回退为逐项软链，按 `link-each` 的表处理 |
+
+`none` 删除该目录下指向共享库的软链，其它条目不动。只删软链，不删目录。
 
 <details>
 <summary><strong>来源仓库的识别与筛选（<code>--path</code> / <code>--skill</code> / <code>--ref</code>）</strong></summary>
@@ -148,7 +178,6 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 - 名称不同的 Skill 直接新增；名称相同的默认跳过，加 `--force` 才替换。
 - 替换是整份替换，不做合并。原件先移到共享库之外的 `<共享库>.local.bak/<名称>`，新版再完整落入。
 - 备份不放在共享库内，否则原生读取共享库、或整目录软链到共享库的 Agent 会把备份当成同名 Skill 加载。旧版本遗留在库内的 `<名称>.local.bak` 会在软链阶段迁出。
-- 软链阶段只处理共享库中含 `SKILL.md` 的目录。已有软链指向不对时改指向；遇到同名实体目录时跳过并报告。
 
 </details>
 
@@ -182,21 +211,6 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
   | bash -s -- --scope project --agent <agent-id>,<agent-id>
 ```
-
----
-
-## 仓库结构
-
-| 路径 | 说明 |
-| :--- | :--- |
-| `setup-skills.sh` | Skills 获取与软链（自包含，可管道执行） |
-| `setup-instructions.sh` | Instructions 入口文件（自包含，可管道执行） |
-| `config/agents.json` | Agent 注册表：各 Agent 的路径与接入方式 |
-| `config/agents.schema.json` | 注册表的数据协议 |
-| [`config/README.md`](config/README.md) | 注册表与协议的维护指南 |
-| `templates/` | 入口文件正文与少数 Agent 的变体片段 |
-| [`templates/README.md`](templates/README.md) | 入口模板的维护指南 |
-| `test/` | 测试脚本与自包含的容器配置，运行方式见 [test/README.md](test/README.md) |
 
 ---
 

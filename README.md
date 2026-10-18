@@ -32,11 +32,11 @@ agents-env records where each agent reads from, and how to connect it, in the re
 
 ## Key features
 
-- 🛡️ **Never overwrites real directories**: a real directory with the same name in an agent's folder is skipped and reported, never replaced. All validation runs before anything is written, so a failure leaves no partial result.
-- ↩️ **Reversible changes**: when `--force` replaces a Skill, the original moves to `<store>.local.bak/`, outside the shared store. An entry file with different content is first backed up as `<file>.local.bak`. The suffix matches the `*.local.*` rule found in common `.gitignore` files, so backups stay out of `git status`.
-- 🔗 **Relative symlinks**: links keep working after the whole tree is moved.
-- 📜 **Fully declarative**: agent paths and link modes live only in the registry, and the scripts contain no vendor-specific branches. Adding an agent means editing the registry only; see the [registry guide](config/README.md).
-- ⚡ **Lightweight**: single-file shell scripts, compatible with Bash 3.2+ and Zsh, runnable straight from `curl | bash`, no Node.js or Python. They require `jq`; fetching Skills also needs `git`; piped runs need `curl` or `wget`.
+- **Never overwrites your own entries**: a same-named real directory, or a same-named symlink that points outside the store, is skipped and reported, never replaced. All validation runs before anything is written, so a failure leaves no partial result.
+- **Reversible changes**: when `--force` replaces a Skill, the original moves to `<store>.local.bak/`, outside the shared store. An entry file with different content is first backed up as `<file>.local.bak`. The suffix matches the `*.local.*` rule found in common `.gitignore` files, so backups stay out of `git status`.
+- **Relative symlinks**: links keep working after the whole tree is moved.
+- **Fully declarative**: agent paths and link modes live only in the registry, and the scripts contain no vendor-specific branches. Adding an agent means editing the registry only; see the [registry guide](config/README.md).
+- **Single file, pipe-friendly**: each script is self-contained, works with Bash 3.2+ and Zsh, and runs straight from `curl | bash`, with no Node.js or Python. See [Requirements](#requirements).
 
 ## Scopes
 
@@ -48,6 +48,17 @@ agents-env records where each agent reads from, and how to connect it, in the re
 | Link mode | Declared per agent in the registry | Declared per agent in the registry |
 
 The store location comes from `shared.skills_root` in the registry; the scripts don't assume it.
+
+## Requirements
+
+| Dependency | When it's needed |
+| :--- | :--- |
+| Bash 3.2+ or Zsh | Always |
+| `jq` | Always, to read the registry |
+| `git` | When `setup-skills.sh` fetches Skills with `--repo` |
+| `curl` or `wget` | When a script runs outside a checkout of this repository (for example, `curl \| bash`), to download the registry and templates |
+
+When a script runs inside a checkout of this repository, or `--source` points to one, it uses the local files and doesn't touch the network.
 
 ---
 
@@ -68,14 +79,6 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 ```
 
 Both scripts print the full plan first and only act after you confirm.
-
-### Output language
-
-Both scripts print in English or Simplified Chinese. They check `AGENTS_ENV_SETUP_LANG` first (`en` or `zh-CN`), then `LC_ALL`, `LC_MESSAGES` and `LANG`; a value that starts with `zh` selects Chinese. When none of these is set, for example in cron or under `env -i`, they print English. The language only affects terminal output. The entry files they write are the same in either language.
-
-```bash
-curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-skills.sh" | AGENTS_ENV_SETUP_LANG=zh-CN bash
-```
 
 ---
 
@@ -110,11 +113,38 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 
 The registry declares a `mode` for each agent, separately for each scope:
 
-| mode | Behavior |
+| mode | What it does |
 | :--- | :--- |
-| `link-dir` | Links the whole directory to the store. If the target is already a real directory with other content, falls back to `link-each` so the agent's built-in Skills stay intact |
-| `link-each` | Creates one symlink per Skill in the store, alongside the agent's own Skills. When a Skill in the store is renamed or deleted, the next run removes the broken symlinks that pointed to it (symlinks only, never directories) |
-| `none` | Creates no links, and removes stale symlinks in that directory that point into the store (symlinks only, never directories) |
+| `link-dir` | Links the agent's whole Skills directory to the store |
+| `link-each` | Creates one symlink per Skill in the store, alongside the agent's own Skills |
+| `none` | Creates no links, and removes symlinks in that directory that point into the store |
+
+Linking only considers directories in the store that contain a `SKILL.md`. The tables below show the result for each thing that may already be in an agent's directory. Every "Skipped" entry is listed under "Needs attention" in the plan, and `--force` doesn't override it.
+
+`link-each` works per Skill name in the store:
+
+| Already at that name | Result |
+| :--- | :--- |
+| Nothing | A relative symlink is created |
+| A correct relative symlink into the store | Left as is |
+| A symlink into the store written differently (for example, an absolute path) | Replaced with the correct relative symlink |
+| A symlink pointing outside the store, broken or not | Skipped |
+| A real directory or file | Skipped |
+
+Symlinks in the agent's directory that point into the store but no longer resolve to a Skill (left behind after a Skill is renamed or deleted) are removed. Alias symlinks are kept as long as they still resolve to a Skill. Everything else is left alone, such as the agent's built-in Skills and symlinks pointing elsewhere.
+
+`link-dir` works on the agent's Skills directory as a whole:
+
+| The directory is | Result |
+| :--- | :--- |
+| Missing | A relative whole-directory symlink is created |
+| A correct relative symlink into the store | Left as is |
+| A symlink into the store written differently | Replaced with the correct relative symlink |
+| A symlink pointing outside the store | Skipped; nothing is linked inside it |
+| A real directory that is empty or holds only symlinks into the store | Those symlinks and the empty directory are removed, and a whole-directory symlink takes its place |
+| A real directory with other content | Falls back to per-Skill links, handled as in the `link-each` table |
+
+`none` removes the symlinks in that directory that point into the store and leaves everything else alone. It removes symlinks only, never directories.
 
 <details>
 <summary><strong>Source detection and filtering (<code>--path</code> / <code>--skill</code> / <code>--ref</code>)</strong></summary>
@@ -148,7 +178,6 @@ A Skill's installed name is the `name` field in its `SKILL.md` frontmatter. With
 - Skills with new names are added; same-named Skills are skipped by default and replaced only with `--force`.
 - Replacement swaps the whole Skill; nothing is merged. The original first moves to `<store>.local.bak/<name>`, outside the store, and then the new version is copied in.
 - Backups stay outside the store because agents that read the store natively, or link to it as a whole directory, would otherwise load a backup as a duplicate Skill. Legacy `<name>.local.bak` backups left inside the store by older versions are moved out during linking.
-- Linking only considers directories in the store that contain a `SKILL.md`. Symlinks pointing to the wrong place are re-pointed; same-named real directories are skipped and reported.
 
 </details>
 
@@ -182,21 +211,6 @@ Limit the run to some agents with a comma-separated list of registry agent IDs:
 curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-instructions.sh" \
   | bash -s -- --scope project --agent <agent-id>,<agent-id>
 ```
-
----
-
-## Repository layout
-
-| Path | Description |
-| :--- | :--- |
-| `setup-skills.sh` | Skills fetch and link (self-contained, pipe-friendly) |
-| `setup-instructions.sh` | Instructions entry files (self-contained, pipe-friendly) |
-| `config/agents.json` | Agent registry: paths and link modes for each agent |
-| `config/agents.schema.json` | Data schema for the registry |
-| [`config/README.md`](config/README.md) | Registry and schema maintenance guide |
-| `templates/` | Entry file body and per-agent variant fragments |
-| [`templates/README.md`](templates/README.md) | Entry template maintenance guide |
-| `test/` | Test scripts and self-contained container setup. See [test/README.md](test/README.md) (Chinese) |
 
 ---
 
