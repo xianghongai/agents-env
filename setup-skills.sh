@@ -881,16 +881,24 @@ plan_legacy_backups() {
   done <"${WORK_DIRECTORY}/legacy"
 }
 
+# 软链目标（readlink 的原样结果）是否落在共享库内：指向库根本身或库内某项。
+# 只看路径文本、不做解析，以免依赖 realpath；因此指向别处另一份同名共享库的软链也会被当成库内。
+points_into_store() {
+  store="${SKILLS_ROOT%/}"
+  case "$1" in
+    *"$store" | *"$store/"*) return 0 ;;
+  esac
+  return 1
+}
+
 # 目录中是否存在「不是指向共享库的软链」的内容：有则整目录软链会破坏它们
 has_foreign_content() {
   [ -d "$1" ] || return 1
   find "$1" -mindepth 1 -maxdepth 1 >"${WORK_DIRECTORY}/scan" 2>/dev/null || true
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
-    if [ -L "$entry" ]; then
-      case "$(readlink "$entry")" in
-        *"$SKILLS_ROOT"*) continue ;;
-      esac
+    if [ -L "$entry" ] && points_into_store "$(readlink "$entry")"; then
+      continue
     fi
     return 0
   done <"${WORK_DIRECTORY}/scan"
@@ -909,10 +917,15 @@ plan_link_each() {
     # 深度按软链自身的路径算：它位于 <dir>/<name>，比 <dir> 深一层。
     want="$(relative_to_skills_root "$2/${name}")/${name}"
     if [ -L "$link_path" ]; then
-      if [ "$(readlink "$link_path")" = "$want" ]; then
+      current="$(readlink "$link_path")"
+      if [ "$current" = "$want" ]; then
         add_plan "skip-link" "$1" "$2/${name}" ""
-      else
+      elif points_into_store "$current"; then
         add_plan "relink" "$1" "$2/${name}" "$(msg '改指向 %s' 'point to %s' "$want")"
+      else
+        # 指向库外的同名软链是用户自己的安排，与同名实体一样不覆盖，--force 也不例外。
+        add_plan "blocked-link" "$1" "$2/${name}" \
+          "$(msg '同名软链指向共享库之外（%s），不覆盖' 'a link with this name points outside the store (%s); not replaced' "$current")"
       fi
     elif [ -e "$link_path" ]; then
       add_plan "blocked-link" "$1" "$2/${name}" \
@@ -934,10 +947,7 @@ plan_stale_links() {
   find "$link_root" -mindepth 1 -maxdepth 1 -type l >"${WORK_DIRECTORY}/links" 2>/dev/null || true
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    case "$(readlink "$candidate")" in
-      *"${SKILLS_ROOT%/}/"*) ;;
-      *) continue ;;
-    esac
+    points_into_store "$(readlink "$candidate")" || continue
     name="$(basename "$candidate")"
     # 共享库里仍有同名 Skill 的已由上面的 relink 处理。
     grep -Fxq -- "$name" "${WORK_DIRECTORY}/shared" && continue
@@ -969,15 +979,24 @@ plan_link() {
       link-dir)
         want="$(relative_to_skills_root "$skills_path")"
         if [ -L "$link_path" ]; then
-          if [ "$(readlink "$link_path")" = "$want" ]; then
+          current="$(readlink "$link_path")"
+          if [ "$current" = "$want" ]; then
             add_plan "skip-link-dir" "$display_name" "$skills_path" ""
-          else
+          elif points_into_store "$current"; then
             add_plan "relink-dir" "$display_name" "$skills_path" "$(msg '改指向 %s' 'point to %s' "$want")"
+          else
+            # 整个目录指向库外：不替换，也不往里面逐项建链，那会写进用户自己的目录。
+            add_plan "blocked-link" "$display_name" "$skills_path" \
+              "$(msg '目录是指向共享库之外的软链（%s），不覆盖' 'the directory is a link outside the store (%s); not replaced' "$current")"
           fi
         elif has_foreign_content "$link_path"; then
           add_plan "fallback" "$display_name" "$skills_path" \
             "$(msg '目录内有其它内容，回退为逐项软链' 'directory has other content; linking each item instead')"
           plan_link_each "$display_name" "$skills_path"
+        elif [ -d "$link_path" ]; then
+          # 空目录或只含指向共享库的软链：这些都是本脚本可以重建的，接管为整目录软链。
+          add_plan "link-dir" "$display_name" "$skills_path" \
+            "$(msg '替换空目录或只含共享库软链的目录 -> %s' 'replace a directory that is empty or holds only store links -> %s' "$want")"
         else
           add_plan "link-dir" "$display_name" "$skills_path" "-> ${want}"
         fi
@@ -990,12 +1009,10 @@ plan_link() {
           find "$link_path" -maxdepth 1 -type l >"${WORK_DIRECTORY}/stale" 2>/dev/null || true
           while IFS= read -r candidate; do
             [ -n "$candidate" ] || continue
-            case "$(readlink "$candidate")" in
-              *"$SKILLS_ROOT"*)
-                add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" \
-                  "$(msg '注册表声明不建链' 'registry declares no links')"
-                ;;
-            esac
+            if points_into_store "$(readlink "$candidate")"; then
+              add_plan "prune-link" "$display_name" "${skills_path}/$(basename "$candidate")" \
+                "$(msg '注册表声明不建链' 'registry declares no links')"
+            fi
           done <"${WORK_DIRECTORY}/stale"
         fi
         ;;
@@ -1171,7 +1188,21 @@ apply_plan() {
         ;;
       link-dir | relink-dir)
         mkdir -p "$(dirname "$target")"
-        [ -L "$target" ] && rm "$target"
+        if [ -L "$target" ]; then
+          rm "$target"
+        elif [ -d "$target" ]; then
+          # 计划阶段已确认目录里只有指向共享库的软链。只删这些软链，目录用 rmdir 删除，
+          # 不递归：运行期间若出现了别的内容，rmdir 失败即中止，不会误删。
+          find "$target" -mindepth 1 -maxdepth 1 -type l >"${WORK_DIRECTORY}/takeover" 2>/dev/null || true
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            if points_into_store "$(readlink "$entry")"; then
+              rm "$entry"
+            fi
+          done <"${WORK_DIRECTORY}/takeover"
+          rmdir "$target" ||
+            fail "$(msg '目录不为空，未替换：%s' 'Directory is not empty; not replaced: %s' "$entry_relpath")"
+        fi
         ln -s "$(relative_to_skills_root "$entry_relpath")" "$target"
         APPLIED=true
         ;;

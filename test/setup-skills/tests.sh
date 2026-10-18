@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 仅在一次性容器内执行。覆盖 setup-skills.sh 的核心能力：
 # 来源识别（单 Skill / 多 Skill、--path 起点、--skill 筛选）、增量获取与库外备份、两种软链形态与整目录的回退、
-# none 的清理、改名与删除后的失效软链清理、计划的分层展示、纯机制（虚构注册表）。
+# none 的清理、改名与删除后的失效软链清理、同名库外条目不替换、计划的分层展示、纯机制（虚构注册表）。
 #
 # 用法：TEST_SHELL=bash|zsh bash test/setup-skills/tests.sh
 set -uo pipefail
@@ -383,6 +383,77 @@ rm -rf "$PR/${SKILLS_ROOT_PROJ}/gone-skill"
 run --scope project --source "$WORKSPACE" --target "$PR" --force >/dev/null 2>&1
 [ ! -L "$PR/${LINK_DIR_PROJ}/gone-skill" ] && ok "回退为逐项软链时同样清理" || bad "回退场景失效软链残留"
 [ -d "$PR/${LINK_DIR_PROJ}/vendor-own-skill" ] && ok "回退场景自带内容不碰" || bad "回退场景自带内容被破坏"
+
+head_ "同名条目指向共享库之外时不替换"
+HF="$(fresh_home)"
+for n in own-dir foreign-live foreign-dead lookalike in-store-abs; do
+  mkdir -p "$HF/${SKILLS_ROOT_USER}/$n"
+  printf 'store\n' >"$HF/${SKILLS_ROOT_USER}/$n/SKILL.md"
+done
+mkdir -p "$HF/${LINK_EACH_USER}/own-dir" "$HF/elsewhere/foreign-live" "$HF/${SKILLS_ROOT_USER%/}-old/lookalike"
+printf 'mine\n' >"$HF/${LINK_EACH_USER}/own-dir/SKILL.md"
+printf 'mine\n' >"$HF/elsewhere/foreign-live/SKILL.md"
+printf 'mine\n' >"$HF/${SKILLS_ROOT_USER%/}-old/lookalike/SKILL.md"
+ln -s "$HF/elsewhere/foreign-live" "$HF/${LINK_EACH_USER}/foreign-live"
+ln -s /nonexistent/foreign-dead "$HF/${LINK_EACH_USER}/foreign-dead"
+# 路径前缀与共享库相同、但并不在库内：子串匹配会误判为库内。
+ln -s "$HF/${SKILLS_ROOT_USER%/}-old/lookalike" "$HF/${LINK_EACH_USER}/lookalike"
+# 指向库内但写法不对的软链仍应改指向，修复不能把它一并拦下。
+ln -s "$HF/${SKILLS_ROOT_USER}/in-store-abs" "$HF/${LINK_EACH_USER}/in-store-abs"
+[ -L "$HF/${LINK_EACH_USER}/foreign-live" ] && [ -f "$HF/${SKILLS_ROOT_USER}/foreign-live/SKILL.md" ] ||
+  { printf '前提不满足：同名的库外软链与库内 Skill 未就位。\n' >&2; exit 1; }
+# --force 只作用于获取阶段，不应让软链阶段覆盖任何东西。
+if run --scope user --source "$WORKSPACE" --target "$HF" --force >/dev/null 2>&1; then
+  ok "存在同名库外条目时正常退出"
+else
+  bad "存在同名库外条目时以非零状态退出"
+fi
+grep -q mine "$HF/${LINK_EACH_USER}/own-dir/SKILL.md" && [ ! -L "$HF/${LINK_EACH_USER}/own-dir" ] &&
+  ok "同名实体目录不替换" || bad "同名实体目录被替换"
+[ "$(readlink "$HF/${LINK_EACH_USER}/foreign-live")" = "$HF/elsewhere/foreign-live" ] &&
+  ok "同名库外软链（有效）不替换" || bad "同名库外软链（有效）被改指向"
+[ "$(readlink "$HF/${LINK_EACH_USER}/foreign-dead")" = /nonexistent/foreign-dead ] &&
+  ok "同名库外软链（失效）不替换" || bad "同名库外软链（失效）被改指向"
+[ "$(readlink "$HF/${LINK_EACH_USER}/lookalike")" = "$HF/${SKILLS_ROOT_USER%/}-old/lookalike" ] &&
+  ok "前缀相似的库外软链不替换" || bad "前缀相似的库外软链被改指向"
+[ "$(readlink "$HF/${LINK_EACH_USER}/in-store-abs")" = \
+  "$(rel_prefix "${LINK_EACH_USER}/in-store-abs")${SKILLS_ROOT_USER}/in-store-abs" ] &&
+  ok "指向库内但写法不对的软链改为相对路径" || bad "库内软链未改指向：$(readlink "$HF/${LINK_EACH_USER}/in-store-abs")"
+
+# 整目录软链同理：目录本身指向库外时，既不替换，也不往里面建链。
+PF="$(mktemp -d /tmp/skproj.XXXXXX)"
+mkdir -p "$PF/${SKILLS_ROOT_PROJ}/some-skill" "$PF/elsewhere" "$(dirname "$PF/${LINK_DIR_PROJ}")"
+printf 'x\n' >"$PF/${SKILLS_ROOT_PROJ}/some-skill/SKILL.md"
+ln -s "$PF/elsewhere" "$PF/${LINK_DIR_PROJ}"
+run --scope project --source "$WORKSPACE" --target "$PF" --force >/dev/null 2>&1
+[ "$(readlink "$PF/${LINK_DIR_PROJ}")" = "$PF/elsewhere" ] &&
+  ok "指向库外的整目录软链不替换" || bad "指向库外的整目录软链被改指向"
+[ -z "$(find "$PF/elsewhere" -mindepth 1)" ] && ok "不往库外目录里建链" || bad "库外目录里被写入了内容"
+PI="$(mktemp -d /tmp/skproj.XXXXXX)"
+mkdir -p "$PI/${SKILLS_ROOT_PROJ}/some-skill" "$(dirname "$PI/${LINK_DIR_PROJ}")"
+printf 'x\n' >"$PI/${SKILLS_ROOT_PROJ}/some-skill/SKILL.md"
+ln -s "$PI/${SKILLS_ROOT_PROJ}" "$PI/${LINK_DIR_PROJ}"
+run --scope project --source "$WORKSPACE" --target "$PI" --force >/dev/null 2>&1
+[ "$(readlink "$PI/${LINK_DIR_PROJ}")" = "$(rel_prefix "$LINK_DIR_PROJ")${SKILLS_ROOT_PROJ}" ] &&
+  ok "指向库内但写法不对的整目录软链改为相对路径" || bad "库内整目录软链未改指向：$(readlink "$PI/${LINK_DIR_PROJ}")"
+
+head_ "整目录软链接管空目录与只含库内软链的目录"
+want_pd="$(rel_prefix "$LINK_DIR_PROJ")${SKILLS_ROOT_PROJ}"
+for shape in empty store-links-only; do
+  PD="$(mktemp -d /tmp/skproj.XXXXXX)"
+  mkdir -p "$PD/${SKILLS_ROOT_PROJ}/some-skill" "$PD/${LINK_DIR_PROJ}"
+  printf 'x\n' >"$PD/${SKILLS_ROOT_PROJ}/some-skill/SKILL.md"
+  [ "$shape" = store-links-only ] && ln -s "$PD/${SKILLS_ROOT_PROJ}/some-skill" "$PD/${LINK_DIR_PROJ}/some-skill"
+  run --scope project --source "$WORKSPACE" --target "$PD" --force >/dev/null 2>&1
+  [ "$(readlink "$PD/${LINK_DIR_PROJ}")" = "$want_pd" ] &&
+    ok "${shape}：目录换成整目录软链" || bad "${shape}：目录未换成整目录软链"
+  [ -f "$PD/${LINK_DIR_PROJ}/some-skill/SKILL.md" ] &&
+    ok "${shape}：经整目录软链可读到 Skill" || bad "${shape}：经整目录软链读不到 Skill"
+  sum_pd="$(find "$PD" | sort | md5sum)"
+  run --scope project --source "$WORKSPACE" --target "$PD" --force >/dev/null 2>&1
+  [ "$sum_pd" = "$(find "$PD" | sort | md5sum)" ] &&
+    ok "${shape}：重复执行结果一致" || bad "${shape}：重复执行仍有变化"
+done
 
 head_ "纯机制：虚构注册表"
 FAKE="$(mktemp -d /tmp/fakereg.XXXXXX)"
