@@ -288,7 +288,7 @@ setup-skills prune --scope user --dry-run
 
 - 内容一致的入口文件直接跳过；内容不同的先备份为 `<文件名>.local.bak`，再覆盖。
 - 不检测 Agent 是否已安装，可以先把入口铺好，之后再安装 Agent。
-- 不带参数时进入交互向导；带参数时为非交互模式，执行前请求一次确认，加 `--force` 则跳过确认。
+- 不带参数时只显示帮助。`interactive` 进入交互向导，管道执行时同样可用：`curl ... | bash -s -- interactive`。其它参数均为非交互模式，执行前请求一次确认，加 `--force` 则跳过确认。
 
 安装为命令后，直接运行 `setup-instructions --scope user` 即可，见「安装为命令」。
 
@@ -357,6 +357,8 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | `prune`（子命令） | 只清理悬空软链（目标不存在），不获取、不建链。只能与 `--scope`、`--target`、`--source`、`--branch`、`--dry-run`、`--yes` 同用 |
 | `--install` | 把两个命令装到 `~/.local/bin`，数据装到 `~/.local/share/agents-env`。只能与 `--branch`、`--dry-run` 同用 |
 | `--update` | 更新已安装的命令与数据。只能与 `--branch`、`--dry-run` 同用 |
+| `interactive` | 进入交互向导，也可写作 `-i` 或 `--interactive`。不接受其它参数 |
+| `help` | 显示帮助并退出，与零参数、`-h`、`--help` 相同 |
 | `-h, --help` | 显示帮助并退出 |
 
 ### `setup-instructions.sh`
@@ -372,6 +374,8 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | `-f, --force` | 跳过确认。无终端的环境必须提供 |
 | `--install` | 把两个命令装到 `~/.local/bin`，数据装到 `~/.local/share/agents-env`。只能与 `--branch`、`--dry-run` 同用 |
 | `--update` | 更新已安装的命令与数据。只能与 `--branch`、`--dry-run` 同用 |
+| `interactive` | 进入交互向导，也可写作 `-i` 或 `--interactive`。不接受其它参数 |
+| `help` | 显示帮助并退出，与零参数、`-h`、`--help` 相同 |
 | `-h, --help` | 显示帮助并退出 |
 
 增删或调整 Agent 的做法见[注册表维护指南](config/README.md)。

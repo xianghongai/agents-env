@@ -9,13 +9,13 @@
 | 路径 | 内容 |
 | --- | --- |
 | `<脚本名>/tests.sh` | 该脚本的非交互测试 |
-| `<脚本名>/pty.exp` | 该脚本零参数时的交互菜单，用 `expect` 模拟终端按键 |
+| `<脚本名>/pty.exp` | 该脚本 `interactive` 入口的交互菜单，用 `expect` 模拟终端按键 |
 | `compose.yaml` | 共用的测试环境定义，镜像与命令都在这里 |
 
 | 目录 | 覆盖范围 |
 | --- | --- |
-| `setup-instructions/` | 入口文件的安装、幂等、备份、dry-run、资源来源、计划展示、共用入口的合并与冲突检查、安装为命令与自更新 |
-| `setup-skills/` | 来源识别、获取、软链、失效软链清理、计划展示、安装为命令与自更新、悬空软链清理（`prune` 子命令） |
+| `setup-instructions/` | 入口文件的安装、幂等、备份、dry-run、资源来源、计划展示、共用入口的合并与冲突检查、安装为命令与自更新、入口与帮助 |
+| `setup-skills/` | 来源识别、获取、软链、失效软链清理、计划展示、安装为命令与自更新、悬空软链清理（`prune` 子命令）、入口与帮助 |
 
 新增脚本时按同样的结构建目录，并在 `compose.yaml` 中加上对应命令。
 
@@ -101,7 +101,7 @@ zsh setup-skills.sh --scope user --target "$H" --dry-run
 ### 体验交互向导
 
 ```sh
-HOME="$H" bash setup-skills.sh
+HOME="$H" bash setup-skills.sh interactive
 ```
 
 `$H` 是上一节准备的目录，其 Mock 共享库 `.agents/skills` 里已有 Skill。

@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 # setup-skills.sh 的 PTY 交互验证：只在容器内执行，只覆盖核心交互路径。
-# 用 HOME 隔离：零参数才进交互模式，不能传 --target。
+# 用 HOME 隔离：只有 interactive 入口才进交互模式，且不能传 --target。
 set timeout 20
 set shell [lindex $argv 0]
 # 界面语言固定为 zh-CN，断言才不受容器 locale 影响。
@@ -18,7 +18,7 @@ if {$skills_root eq "" || [catch {exec sh -c "ls \"$env(HOME)/$skills_root\"/*/S
 }
 
 # --- 范围菜单 + 仓库地址输入 + 取消 ---
-spawn $shell /workspace/setup-skills.sh
+spawn $shell /workspace/setup-skills.sh interactive
 expect {
   timeout { bad "未出现范围菜单"; exit 1 }
   "选择安装范围" { ok "出现范围菜单" }

@@ -57,7 +57,7 @@ services:
       TEST_SHELL=bash bash test/setup-instructions/tests.sh &&
       TEST_SHELL=bash bash test/setup-skills/tests.sh'
 
-  # PTY 交互测试。用 HOME 隔离：零参数才进交互模式，不能传 --target。
+  # PTY 交互测试。用 HOME 隔离：只有 interactive 入口才进交互模式，且不能传 --target。
   test-pty:
     <<: *mount
     build:

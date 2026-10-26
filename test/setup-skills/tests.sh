@@ -829,5 +829,38 @@ rc=$?
 [ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && [ ! -e "$H_X/.local" ] &&
   ok "prune 与 --install 同用时在下载前拦截" || bad "prune 与 --install 同用未被拦截（退出码 $rc）"
 
+head_ "入口：零参数与 help 只显示帮助，交互向导只由 interactive 进入"
+PE="$(fresh_home)"
+mkdir -p "$PE/${SKILLS_ROOT_USER}/keep-skill"
+printf 'x\n' >"$PE/${SKILLS_ROOT_USER}/keep-skill/SKILL.md"
+before_e="$(find "$PE" | sort | md5sum)"
+
+# 零参数只显示帮助：退出 0，不进向导、不做任何改动。
+run_no_tty >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ "$before_e" = "$(find "$PE" | sort | md5sum)" ] &&
+  ok "零参数只显示帮助，退出 0 且无副作用" || bad "零参数未按帮助处理（退出码 $rc）"
+
+help_ok=true
+for form in help -h --help; do
+  run "$form" >/dev/null 2>&1 || help_ok=false
+done
+[ "$help_ok" = true ] && [ "$before_e" = "$(find "$PE" | sort | md5sum)" ] &&
+  ok "help、-h、--help 退出 0 且无副作用" || bad "help 系列入口未按帮助处理"
+
+# 交互向导只能由 interactive 进入：无终端时在读取输入之前失败，不产生副作用。
+iv_ok=true
+for form in interactive -i --interactive; do
+  run_no_tty "$form" >/dev/null 2>&1 && iv_ok=false
+done
+[ "$iv_ok" = true ] && [ "$before_e" = "$(find "$PE" | sort | md5sum)" ] &&
+  ok "无终端时 interactive、-i 与 --interactive 非零退出且无副作用" || bad "无终端时交互入口未被拒绝"
+
+# interactive 不接受其它参数。
+run interactive --scope user --target "$PE" >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ "$before_e" = "$(find "$PE" | sort | md5sum)" ] &&
+  ok "interactive 与其它参数同用时拒绝且无副作用" || bad "interactive 未拒绝其它参数（退出码 $rc）"
+
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

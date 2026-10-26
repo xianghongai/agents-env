@@ -288,7 +288,7 @@ setup-skills prune --scope user --dry-run
 
 - An entry file with identical content is skipped. One with different content is backed up as `<file>.local.bak` before being overwritten.
 - The script doesn't check whether an agent is installed. You can set up entries first and install the agent later.
-- Without arguments, the wizard starts. With arguments, the run is non-interactive, and the script asks for confirmation once unless `--force` is given.
+- Without arguments, the script prints its help. `interactive` starts the wizard, and works from a pipe too: `curl ... | bash -s -- interactive`. Other arguments make the run non-interactive, and the script asks for confirmation once unless `--force` is given.
 
 Once the commands are installed, run `setup-instructions --scope user` directly, as described in [Install as a command](#install-as-a-command).
 
@@ -357,6 +357,8 @@ Each script is self-contained and needs no Node.js or Python. When a script runs
 | `prune` (subcommand) | Remove dangling symlinks (targets that do not exist) only. Fetches and links nothing. Accepts only `--scope`, `--target`, `--source`, `--branch`, `--dry-run` and `--yes` |
 | `--install` | Install both commands into `~/.local/bin`, with their data in `~/.local/share/agents-env`. Accepts only `--branch` and `--dry-run` |
 | `--update` | Update the installed commands and their data. Accepts only `--branch` and `--dry-run` |
+| `interactive` | Start the interactive wizard, also as `-i` or `--interactive`. Takes no other arguments |
+| `help` | Show help and exit, same as no arguments, `-h` or `--help` |
 | `-h, --help` | Show help and exit |
 
 ### `setup-instructions.sh`
@@ -372,6 +374,8 @@ Each script is self-contained and needs no Node.js or Python. When a script runs
 | `-f, --force` | Skip the confirmation. Required without a terminal |
 | `--install` | Install both commands into `~/.local/bin`, with their data in `~/.local/share/agents-env`. Accepts only `--branch` and `--dry-run` |
 | `--update` | Update the installed commands and their data. Accepts only `--branch` and `--dry-run` |
+| `interactive` | Start the interactive wizard, also as `-i` or `--interactive`. Takes no other arguments |
+| `help` | Show help and exit, same as no arguments, `-h` or `--help` |
 | `-h, --help` | Show help and exit |
 
 Adding or changing an agent is covered in the [registry guide](config/README.md).

@@ -103,6 +103,8 @@ print_usage() {
     cat <<'EOF'
 Usage: setup-skills.sh [options]
        setup-skills.sh prune [options]
+       setup-skills.sh interactive
+       setup-skills.sh help
 
 Fetch Skills and link them into each agent as declared in the registry.
 Without --repo, only links.
@@ -124,8 +126,9 @@ Options:
   -h, --help                      Show this help and exit
 
 Behavior:
-  With no arguments, starts the interactive wizard. Any argument switches to
-  strict non-interactive mode.
+  With no arguments, prints this help. The interactive wizard starts only with
+  interactive (or -i, --interactive), which takes no other arguments. Any other argument
+  switches to strict non-interactive mode.
 
   Fetch: finds the Skills in the source repository and copies them into the
         shared store incrementally.
@@ -168,6 +171,7 @@ Examples:
   setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
     --path skills/.curated --skill alpha-skill --skill beta-skill
   setup-skills.sh --scope user --force
+  setup-skills.sh interactive
   setup-skills.sh --install
   setup-skills.sh --update --dry-run
   setup-skills.sh prune --scope user --dry-run
@@ -177,6 +181,8 @@ EOF
   cat <<'EOF'
 用法：setup-skills.sh [选项]
       setup-skills.sh prune [选项]
+      setup-skills.sh interactive
+      setup-skills.sh help
 
 获取 Skills 并按注册表声明为各 Agent 建立软链。
 省略 --repo 时不获取，只做软链。
@@ -198,7 +204,8 @@ EOF
   -h, --help                      显示本帮助并退出
 
 行为：
-  不带任何参数时进入交互向导；出现任意参数即进入严格非交互模式。
+  不带任何参数时只显示本帮助。交互向导仅由 interactive（或 -i、--interactive）进入，且不接受其它参数；
+  出现其它参数即进入严格非交互模式。
 
   获取：识别来源仓库中的 Skill，增量搬运到共享库。
         仓库根下有 SKILL.md 时，整个仓库视为一个 Skill；
@@ -233,6 +240,7 @@ EOF
   setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
     --path skills/.curated --skill alpha-skill --skill beta-skill
   setup-skills.sh --scope user --force
+  setup-skills.sh interactive
   setup-skills.sh --install
   setup-skills.sh --update --dry-run
   setup-skills.sh prune --scope user --dry-run
@@ -279,13 +287,23 @@ reject_duplicate() {
 }
 
 parse_arguments() {
+  # 零参数与 help 一样只显示帮助；交互向导只能由 interactive 进入。
   if [ "$#" -eq 0 ]; then
-    INTERACTIVE=true
-    return 0
+    print_usage
+    exit 0
   fi
 
   # 命令只认第一个位置，之后的参数仍按选项解析。
   case "$1" in
+    help)
+      print_usage
+      exit 0
+      ;;
+    interactive | -i | --interactive)
+      [ "$#" -eq 1 ] || fail "$(msg '%s 只能单独使用。' '%s must be used alone.' "$1")"
+      INTERACTIVE=true
+      return 0
+      ;;
     prune)
       SUBCOMMAND=prune
       shift
