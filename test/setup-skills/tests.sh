@@ -531,5 +531,194 @@ printf '%s' "$out_t" | grep -Eq '执行 [0-9]+ 项|跳过 [0-9]+ 项' && bad "�
 [ "$(readlink "$H8/twins/dir/twin-skill" 2>/dev/null)" = "../../shared/library/twin-skill" ] &&
   ok "共用目录软链正确" || bad "共用目录软链不对"
 
+head_ "安装为命令与自更新"
+# 前提：注册表须声明至少一个模板变体，否则「数据完整」的断言会空转。
+declared_template_paths() {
+  jq -r '[.agents[] | .instructions // {} | (.template_override // {}), (.template_frontmatter // {}) | .[]? | select(type == "string")] | .[]' "$REGISTRY"
+}
+[ -n "$(declared_template_paths)" ] ||
+  { printf '前提不满足：注册表没有声明任何模板变体。\n' >&2; exit 1; }
+
+# 上游用工作区副本模拟：脚本、注册表与模板都从这里取，改动它即模拟远端出了新版本。
+UP="$(mktemp -d /tmp/upstream.XXXXXX)"
+mkdir -p "$UP/config" "$UP/templates"
+cp "$WORKSPACE/setup-skills.sh" "$WORKSPACE/setup-instructions.sh" "$UP/"
+cp "$REGISTRY" "$UP/config/"
+cp -R "$WORKSPACE/templates/." "$UP/templates/"
+# 假 curl：URL 形如 <仓库>/<分支>/<路径>，按路径从上游取文件，每次请求都记入日志；上游缺文件即失败。
+FAKEBIN="$(mktemp -d /tmp/fakebin.XXXXXX)"
+LOG="$FAKEBIN/requests"
+cat >"$FAKEBIN/curl" <<'FAKE'
+#!/usr/bin/env bash
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\n' "$url" >>"$FAKE_LOG"
+rest="${url#*/agents-env/}"
+rel="${rest#*/}"
+[ -f "$FAKE_UPSTREAM/$rel" ] || exit 22
+mkdir -p "$(dirname "$out")"
+cp "$FAKE_UPSTREAM/$rel" "$out"
+FAKE
+chmod +x "$FAKEBIN/curl"
+
+# $1 HOME，其余为要执行的命令：在假 curl 环境下运行
+with_home() {
+  home="$1"
+  shift
+  env PATH="$FAKEBIN:$PATH" HOME="$home" FAKE_UPSTREAM="$UP" FAKE_LOG="$LOG" "$@"
+}
+
+# 以 curl | bash 同形态执行：脚本从标准输入来，$0 不是路径。在无检出的目录里运行，避免误用检出。
+# $1 HOME，$2 作为标准输入的脚本，其余为参数
+pipe_install() {
+  home="$1"
+  script="$2"
+  shift 2
+  (cd "$FAKEBIN" && cat "$script" | with_home "$home" "$SHELL_BIN" -s -- "$@")
+}
+
+# 以目录树内容比对，不比时间戳。$1 目录，$2 快照目录
+same_tree() {
+  diff -r "$1" "$2" >/dev/null
+}
+
+H_A="$(mktemp -d /tmp/instA.XXXXXX)"
+pipe_install "$H_A" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ -x "$H_A/.local/bin/setup-skills" ] && [ -x "$H_A/.local/bin/setup-instructions" ] &&
+  ok "管道执行 --install：两个命令装入 ~/.local/bin" || bad "管道执行 --install 未装好命令（退出码 $rc）"
+cmp -s "$H_A/.local/bin/setup-skills" "$UP/setup-skills.sh" &&
+  cmp -s "$H_A/.local/bin/setup-instructions" "$UP/setup-instructions.sh" &&
+  ok "命令内容与上游一致" || bad "命令内容与上游不一致"
+cmp -s "$H_A/.local/share/agents-env/config/agents.json" "$UP/config/agents.json" &&
+  ok "注册表装入 ~/.local/share/agents-env" || bad "注册表未装入数据目录"
+missing="$(declared_template_paths | while IFS= read -r p; do
+  [ -f "$H_A/.local/share/agents-env/$p" ] || printf '%s ' "$p"
+done)"
+[ -z "$missing" ] && ok "注册表声明的模板变体全部装入" || bad "缺少模板变体：$missing"
+[ -z "$(find "$H_A" -name '*.local.bak')" ] && ok "首次安装不产生备份" || bad "首次安装产生了备份"
+
+rm -rf "$FAKEBIN/snap"
+cp -R "$H_A/.local" "$FAKEBIN/snap"
+pipe_install "$H_A" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && same_tree "$H_A/.local" "$FAKEBIN/snap" &&
+  ok "重复 --install 不改动任何文件" || bad "重复 --install 有改动"
+
+H_B="$(mktemp -d /tmp/instB.XXXXXX)"
+pipe_install "$H_B" "$UP/setup-instructions.sh" --install >/dev/null 2>&1
+same_tree "$H_A/.local" "$H_B/.local" &&
+  ok "两个脚本各自执行 --install，装出的目录树逐字节相同" || bad "两个脚本装出的目录树不同"
+
+: >"$LOG"
+env PATH="$FAKEBIN:$PATH" HOME="$H_A" FAKE_UPSTREAM=/nonexistent FAKE_LOG="$LOG" \
+  "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --scope user --target "$H_A" --dry-run >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$LOG" ] &&
+  ok "已安装的命令直接使用已安装数据，不联网" || bad "已安装的命令仍然联网或失败（退出码 $rc）"
+
+: >"$LOG"
+(cd "$FAKEBIN" && cat "$UP/setup-skills.sh" | with_home "$H_A" "$SHELL_BIN" -s -- --scope user --target "$H_A" --dry-run >/dev/null 2>&1)
+grep -q 'config/agents.json' "$LOG" &&
+  ok "管道执行的脚本不使用已安装数据" || bad "管道执行误用了已安装数据"
+
+: >"$LOG"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --scope user --target "$H_A" --dry-run --branch feature-x >/dev/null 2>&1
+grep -q '/feature-x/config/agents.json' "$LOG" &&
+  ok "显式 --branch 时从该分支下载，不用已安装数据" || bad "--branch 被忽略"
+
+# 上游出了新版：脚本与模板都变。从已安装的命令运行 --update，原件应留作备份。
+cp "$H_A/.local/bin/setup-skills" "$FAKEBIN/old-setup-skills"
+sed -i '$i # upstream v2' "$UP/setup-skills.sh"
+printf '<!-- upstream v2 -->\n' >>"$UP/templates/entry-user.md"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$H_A/.local/bin/setup-skills" "$UP/setup-skills.sh" &&
+  cmp -s "$H_A/.local/bin/setup-skills.local.bak" "$FAKEBIN/old-setup-skills" &&
+  ok "--update 替换脚本，原件备份为 .local.bak" || bad "--update 未正确替换脚本（退出码 $rc）"
+cmp -s "$H_A/.local/share/agents-env/templates/entry-user.md" "$UP/templates/entry-user.md" &&
+  ok "--update 同时更新数据" || bad "--update 未更新数据"
+
+# 上游脚本语法错误：整次更新中止，已安装的内容一概不动。
+rm -rf "$FAKEBIN/snap"
+cp -R "$H_A/.local" "$FAKEBIN/snap"
+sed -i '$i if' "$UP/setup-instructions.sh"
+printf '<!-- upstream v3 -->\n' >>"$UP/templates/entry-user.md"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_A/.local" "$FAKEBIN/snap" &&
+  ok "上游脚本未通过校验时整体中止，不留半成品" || bad "校验失败后仍有改动（退出码 $rc）"
+cp "$WORKSPACE/setup-instructions.sh" "$UP/"
+cp "$WORKSPACE/templates/entry-user.md" "$UP/templates/"
+
+# 上游注册表不是合法 JSON：同样整体中止。
+printf '{' >"$UP/config/agents.json"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_A/.local" "$FAKEBIN/snap" &&
+  ok "上游注册表非法时整体中止" || bad "注册表非法时仍有改动（退出码 $rc）"
+
+# 注册表声明的模板路径越出仓库（含 .. 段）：拒绝写入，不得把数据写到目录之外。
+jq --arg p '../evil.md' '.agents |= with_entries(.value.instructions.template_override.user = $p)' "$REGISTRY" >"$UP/config/agents.json"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_A/.local" "$FAKEBIN/snap" && [ ! -e "$H_A/.local/share/evil.md" ] &&
+  ok "注册表中的越界路径被拒绝" || bad "越界路径未被拒绝（退出码 $rc）"
+cp "$REGISTRY" "$UP/config/agents.json"
+
+# --dry-run 只展示计划，不写任何东西。
+printf '<!-- upstream v4 -->\n' >>"$UP/templates/entry-user.md"
+rm -rf "$FAKEBIN/snap"
+cp -R "$H_A/.local" "$FAKEBIN/snap"
+with_home "$H_A" "$SHELL_BIN" "$H_A/.local/bin/setup-skills" --update --dry-run >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && same_tree "$H_A/.local" "$FAKEBIN/snap" &&
+  ok "--update --dry-run 不写入" || bad "--dry-run 仍然写入了文件"
+cp "$WORKSPACE/templates/entry-user.md" "$UP/templates/"
+
+# 没有任何已安装命令时 --update 不新增，直接失败。
+H_N="$(mktemp -d /tmp/instN.XXXXXX)"
+with_home "$H_N" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$H_N/.local" ] &&
+  ok "未安装时 --update 失败且不写入" || bad "未安装时 --update 未拦截（退出码 $rc）"
+
+# 只更新已安装的命令：缺失的那个不会被补回来。
+H_P="$(mktemp -d /tmp/instP.XXXXXX)"
+pipe_install "$H_P" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+rm "$H_P/.local/bin/setup-instructions"
+with_home "$H_P" "$SHELL_BIN" "$H_P/.local/bin/setup-skills" --update >/dev/null 2>&1
+[ ! -e "$H_P/.local/bin/setup-instructions" ] && [ -x "$H_P/.local/bin/setup-skills" ] &&
+  ok "--update 不补回缺失的命令" || bad "--update 补回了缺失的命令"
+
+# 命令位置是软链：视为用户自行安排，不覆盖。
+H_S="$(mktemp -d /tmp/instS.XXXXXX)"
+pipe_install "$H_S" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+rm "$H_S/.local/bin/setup-instructions"
+ln -s "$FAKEBIN/elsewhere" "$H_S/.local/bin/setup-instructions"
+with_home "$H_S" "$SHELL_BIN" "$H_S/.local/bin/setup-skills" --update >/dev/null 2>&1
+[ -L "$H_S/.local/bin/setup-instructions" ] &&
+  [ "$(readlink "$H_S/.local/bin/setup-instructions")" = "$FAKEBIN/elsewhere" ] &&
+  ok "命令位置是软链时不覆盖" || bad "软链命令被覆盖"
+
+# 与范围、来源相关的选项在下载之前拦截，不产生任何请求或文件。
+: >"$LOG"
+H_C="$(mktemp -d /tmp/instC.XXXXXX)"
+with_home "$H_C" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" --install --scope user >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && [ ! -e "$H_C/.local" ] &&
+  ok "--install 与 --scope 冲突时在下载前拦截" || bad "选项冲突未被拦截（退出码 $rc）"
+with_home "$H_C" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" --update --force >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] &&
+  ok "--update 与 --force 冲突时在下载前拦截" || bad "--update 与 --force 未被拦截（退出码 $rc）"
+
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

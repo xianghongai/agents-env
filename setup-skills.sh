@@ -31,6 +31,8 @@ msg() {
 
 readonly GITHUB_REPOSITORY="xianghongai/agents-env"
 readonly DEFAULT_GITHUB_BRANCH="main"
+# 安装为命令后的固定落点：命令在 ~/.local/bin，数据在 ~/.local/share/<应用名>。
+readonly INSTALL_APP_NAME="agents-env"
 # 交互菜单的空转轮次上限：每轮一次 1 秒读超时，约等于一小时无按键后放弃等待。
 readonly IDLE_ROUNDS_BEFORE_CANCEL=3600
 # 控制字符用变量承载：case 分支里不能直接写 $'\r' 这类展开。
@@ -61,6 +63,8 @@ SKILL_FILTER=""
 SOURCE_DIRECTORY=""
 TARGET_ROOT=""
 GITHUB_BRANCH="$DEFAULT_GITHUB_BRANCH"
+# 显式给了 --branch 时，资源一律从该分支下载，不使用已安装的数据。
+BRANCH_GIVEN=false
 DRY_RUN=false
 FORCE=false
 ASSUME_YES=false
@@ -68,6 +72,10 @@ WORK_DIRECTORY=""
 CLONE_DIRECTORY=""
 RESOURCE_DIRECTORY=""
 RESOURCE_SOURCE_LABEL=""
+# 资源来源类别：installed 表示已安装的数据，空表示检出或下载。
+SOURCE_KIND=""
+# install 或 update，空表示普通的获取与软链流程。
+SELF_ACTION=""
 SKILLS_ROOT=""
 BACKUP_ROOT=""
 # 顶层捕获调用路径：Zsh 的 FUNCTION_ARGZERO 默认开启，函数内 $0 会变成函数名。
@@ -108,6 +116,8 @@ Options:
       --dry-run                   Show the plan only; make no persistent changes
   -y, --yes                       Skip the confirmation prompt; required without a terminal (for example, in CI)
   -f, --force                     Replace same-named Skills (originals backed up outside the store); implies --yes
+      --install                   Install both commands into ~/.local/bin, with their data
+      --update                    Update the installed commands and their data to the latest version
   -h, --help                      Show this help and exit
 
 Behavior:
@@ -137,12 +147,19 @@ Behavior:
                   the store, left by renamed or deleted Skills, are removed.
         none      Creates nothing, and removes stale symlinks into the store in that directory.
 
+  Install and update: --install puts both commands into ~/.local/bin and their data into
+        ~/.local/share/agents-env. --update refreshes what is already installed and never
+        adds a missing command. Changed files are replaced, and originals are kept as .local.bak.
+        Only --branch and --dry-run may accompany them; neither asks for confirmation.
+
 Examples:
   setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
   setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
   setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
     --path skills/.curated --skill alpha-skill --skill beta-skill
   setup-skills.sh --scope user --force
+  setup-skills.sh --install
+  setup-skills.sh --update --dry-run
 EOF
     return 0
   fi
@@ -164,6 +181,8 @@ EOF
       --dry-run                   只展示计划，不产生任何持久化副作用
   -y, --yes                       跳过执行前的确认；无终端的环境（如 CI）必须提供
   -f, --force                     替换同名 Skill（原件备份到共享库之外），隐含 --yes
+      --install                   把两个命令装到 ~/.local/bin，并附带数据，见下方「行为」
+      --update                    把已安装的命令与数据更新到最新版
   -h, --help                      显示本帮助并退出
 
 行为：
@@ -186,12 +205,19 @@ EOF
                   其指向共享库的失效软链一并清理。
         none      不动作，并清理该目录下指向共享库的冗余软链。
 
+  安装与更新：--install 把两个命令装到 ~/.local/bin，数据装到 ~/.local/share/agents-env。
+        --update 只更新已安装的部分，不会新增缺失的命令。
+        有变化的文件直接替换，原件保留为 .local.bak。
+        只能与 --branch、--dry-run 同用，两者都不需要确认。
+
 示例：
   setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
   setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
   setup-skills.sh --scope user --repo https://github.com/someone/mixed-repo.git \
     --path skills/.curated --skill alpha-skill --skill beta-skill
   setup-skills.sh --scope user --force
+  setup-skills.sh --install
+  setup-skills.sh --update --dry-run
 EOF
 }
 
@@ -287,7 +313,13 @@ parse_arguments() {
       --branch)
         require_value "--branch" "${2:-}"
         GITHUB_BRANCH="$2"
+        BRANCH_GIVEN=true
         shift 2
+        ;;
+      --install | --update)
+        [ -z "$SELF_ACTION" ] || fail "$(msg '--install 与 --update 只能指定一个。' 'Use only one of --install and --update.')"
+        SELF_ACTION="${1#--}"
+        shift
         ;;
       --dry-run)
         DRY_RUN=true
@@ -651,11 +683,22 @@ resolve_resources() {
   if [ -z "$SOURCE_DIRECTORY" ]; then
     SOURCE_DIRECTORY="$(default_source_directory)"
   fi
+  # 检出目录优先；都没有时，若从已安装的命令运行，就用已安装的数据，省去下载。
+  if [ -z "$SOURCE_DIRECTORY" ] && [ "$BRANCH_GIVEN" = false ]; then
+    SOURCE_DIRECTORY="$(installed_data_directory)"
+    if [ -n "$SOURCE_DIRECTORY" ]; then
+      SOURCE_KIND=installed
+    fi
+  fi
   if [ -n "$SOURCE_DIRECTORY" ]; then
     [ -d "$SOURCE_DIRECTORY" ] ||
       fail "$(msg '%s 目录不存在：%s' '%s directory does not exist: %s' --source "$SOURCE_DIRECTORY")"
     RESOURCE_DIRECTORY="$(cd "$SOURCE_DIRECTORY" && pwd)"
-    RESOURCE_SOURCE_LABEL="$(msg '本地检出 %s' 'local checkout %s' "$RESOURCE_DIRECTORY")"
+    if [ "$SOURCE_KIND" = installed ]; then
+      RESOURCE_SOURCE_LABEL="$(msg '已安装数据 %s' 'installed data %s' "$RESOURCE_DIRECTORY")"
+    else
+      RESOURCE_SOURCE_LABEL="$(msg '本地检出 %s' 'local checkout %s' "$RESOURCE_DIRECTORY")"
+    fi
     [ -f "${RESOURCE_DIRECTORY}/config/agents.json" ] ||
       fail "$(msg '%s 目录下缺少 %s：%s' '%s directory has no %s: %s' --source config/agents.json "$RESOURCE_DIRECTORY")"
     return 0
@@ -1256,9 +1299,238 @@ run_phase() {
   apply_plan
 }
 
+# 安装与自更新。两个脚本各自内置同一份实现：命令装在 ~/.local/bin，数据装在 ~/.local/share/agents-env。
+# 无论执行哪个脚本，都把两个命令与全部数据一起装好或更新，保证版本一致，不会出现新脚本配旧注册表。
+# 数据清单以远端注册表为准：注册表声明的模板变体也要带上，否则渲染时会缺文件。
+
+# 只有从 ~/.local/bin 中的命令直接运行时，才读取已安装的数据。
+# 管道执行拿到的脚本永远是最新版，配上旧注册表会错位，因此不走这里。
+installed_data_directory() {
+  [ -n "${HOME:-}" ] || return 0
+  case "$SCRIPT_INVOCATION" in
+    */*) ;;
+    *) return 0 ;;
+  esac
+  invoked_dir="$(cd "$(dirname "$SCRIPT_INVOCATION")" 2>/dev/null && pwd -P)" || return 0
+  local_bin="$(cd "${HOME}/.local/bin" 2>/dev/null && pwd -P)" || return 0
+  candidate="${HOME}/.local/share/${INSTALL_APP_NAME}"
+  if [ "$invoked_dir" = "$local_bin" ] && [ -f "${candidate}/config/agents.json" ]; then
+    printf '%s' "$candidate"
+  fi
+  return 0
+}
+
+# --install 与 --update 只作用于固定位置。其它范围、来源或覆盖类选项与之无关，
+# 在下载之前拦下，免得用户以为它们生效了。
+validate_self_options() {
+  [ -n "$SELF_ACTION" ] || return 0
+  if [ -n "$SCOPE" ] || [ -n "$SOURCE_DIRECTORY" ] || [ -n "$TARGET_ROOT" ] || [ -n "$REPO" ] ||
+    [ -n "$REPO_REF" ] || [ -n "$REPO_SUBPATH" ] || [ -n "$SKILL_FILTER" ] ||
+    [ "$FORCE" = true ] || [ "$ASSUME_YES" = true ]; then
+    fail "$(msg '%s 只能与 %s 和 %s 同用。' '%s can only be combined with %s and %s.' "--${SELF_ACTION}" --branch --dry-run)"
+  fi
+}
+
+# 下载内容先过形态校验，挡住 404 页面、截断的脚本和错位的注册表。全部通过前不写任何文件。
+# $1 仓库内相对路径，通过返回 0。
+validate_install_file() {
+  file="${WORK_DIRECTORY}/stage/$1"
+  case "$1" in
+    *.sh)
+      [ "$(head -n 1 "$file")" = "#!/usr/bin/env bash" ] || return 1
+      bash -n "$file" 2>/dev/null || return 1
+      [ "$(tail -n 1 "$file")" = "main \"\$@\"" ] || return 1
+      ;;
+    config/agents.json)
+      jq -e '(.agents | type == "object") and (.shared | type == "object")' "$file" >/dev/null 2>&1 || return 1
+      ;;
+    *)
+      [ -s "$file" ] || return 1
+      ;;
+  esac
+}
+
+check_install_file() {
+  validate_install_file "$1" ||
+    fail "$(msg '%s 未通过校验，未做任何修改。' '%s failed validation; nothing was changed.' "$1")"
+}
+
+# 清单 = 两个脚本、注册表、通用模板，加上注册表声明的模板变体（整份替换与前置块）。
+# 路径只允许仓库内的相对路径且不含 .. 段，注册表因此无法把写入引到数据目录之外。
+build_install_manifest() {
+  manifest="${WORK_DIRECTORY}/manifest"
+  {
+    printf '%s\n' setup-skills.sh setup-instructions.sh config/agents.json templates/entry-user.md templates/entry-project.md
+    jq -r '[.agents[] | .instructions // {} | (.template_override // {}), (.template_frontmatter // {}) | .[]? | select(type == "string")] | .[]' \
+      "${WORK_DIRECTORY}/stage/config/agents.json"
+  } | awk '!seen[$0]++' >"$manifest"
+  while IFS= read -r rel; do
+    case "$rel" in
+      "" | /* | *..*) fail "$(msg '注册表中的路径不合法：%s' 'Invalid path in the registry: %s' "$rel")" ;;
+    esac
+  done <"$manifest"
+}
+
+# $1 目标绝对路径，$2 暂存文件。结果写入 action。
+classify_target() {
+  if [ -L "$1" ]; then
+    action=skip-link
+  elif [ ! -e "$1" ]; then
+    action=new
+  elif cmp -s "$2" "$1"; then
+    action=same
+  else
+    action=update
+  fi
+}
+
+# 计划只读、不产生副作用。每行：动作<TAB>目标绝对路径<TAB>暂存文件。
+plan_installation() {
+  : >"$install_plan"
+  INSTALLED_COMMANDS=0
+  while IFS= read -r rel; do
+    src="${WORK_DIRECTORY}/stage/${rel}"
+    case "$rel" in
+      *.sh)
+        dest="${bin_dir}/$(basename "$rel" .sh)"
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+          INSTALLED_COMMANDS=$((INSTALLED_COMMANDS + 1))
+        fi
+        if [ "$SELF_ACTION" = update ] && [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+          action=absent
+        else
+          classify_target "$dest" "$src"
+        fi
+        ;;
+      *)
+        dest="${data_dir}/${rel}"
+        classify_target "$dest" "$src"
+        ;;
+    esac
+    printf '%s\t%s\t%s\n' "$action" "$dest" "$src" >>"$install_plan"
+  done <"$manifest"
+}
+
+install_has_changes() {
+  awk -F "$TAB_CHAR" '$1 == "new" || $1 == "update" { found = 1 } END { exit !found }' "$install_plan"
+}
+
+install_label() {
+  case "$1" in
+    new) msg '新增' 'new' ;;
+    update) msg '更新，原件备份为 %s' 'updated, original kept as %s' '.local.bak' ;;
+    same) msg '已是最新' 'up to date' ;;
+    skip-link) msg '跳过：位置是软链，不覆盖' 'skipped: a symlink, not replaced' ;;
+    absent) msg '跳过：未安装，--update 不新增命令' 'skipped: not installed; --update does not add commands' ;;
+  esac
+}
+
+# 命令逐行列出；数据文件数量多，只汇总条数。
+print_installation() {
+  if [ "$SELF_ACTION" = install ]; then
+    info "$(msg '[安装]' '[Install]')"
+  else
+    info "$(msg '[更新]' '[Update]')"
+  fi
+  info "$(msg '来源：GitHub %s@%s' 'Source: GitHub %s@%s' "$GITHUB_REPOSITORY" "$GITHUB_BRANCH")"
+  data_new=0
+  data_update=0
+  data_same=0
+  while IFS="$TAB_CHAR" read -r action dest src; do
+    case "$dest" in
+      "${data_dir}"/*)
+        case "$action" in
+          new) data_new=$((data_new + 1)) ;;
+          update) data_update=$((data_update + 1)) ;;
+          *) data_same=$((data_same + 1)) ;;
+        esac
+        ;;
+      *)
+        printf '  %s  %s\n' "$dest" "$(install_label "$action")"
+        ;;
+    esac
+  done <"$install_plan"
+  printf '  %s  %s\n' "$data_dir" "$(msg '%d 个文件：新增 %d，更新 %d，已是最新 %d' '%d files: %d new, %d updated, %d up to date' \
+    "$((data_new + data_update + data_same))" "$data_new" "$data_update" "$data_same")"
+}
+
+# 先把所有待写内容放到目标旁边的 .new，全部就位后才逐个替换，
+# 中途失败不会留下新旧混杂的组合。替换用 mv：正在运行的脚本仍持有旧 inode，不受影响。
+apply_installation() {
+  mkdir -p "$bin_dir" "$data_dir"
+  while IFS="$TAB_CHAR" read -r action dest src; do
+    case "$action" in
+      new | update)
+        mkdir -p "$(dirname "$dest")"
+        cp "$src" "${dest}.new"
+        case "$dest" in
+          "${bin_dir}"/*) chmod 755 "${dest}.new" ;;
+        esac
+        ;;
+    esac
+  done <"$install_plan"
+  while IFS="$TAB_CHAR" read -r action dest src; do
+    case "$action" in
+      new) mv "${dest}.new" "$dest" ;;
+      update)
+        cp "$dest" "${dest}.local.bak"
+        mv "${dest}.new" "$dest"
+        ;;
+    esac
+  done <"$install_plan"
+}
+
+# 命令固定装在 ~/.local/bin，数据固定在 ~/.local/share/agents-env，两者都不随参数变化。
+# 全部文件先下载到暂存区并校验，计划也算完，才写入：任何一步失败都不留下半成品。
+manage_installation() {
+  [ -n "${HOME:-}" ] ||
+    fail "$(msg '未设置 %s，无法确定安装位置。' 'HOME is not set, so the install location cannot be determined.' HOME)"
+  bin_dir="${HOME}/.local/bin"
+  data_dir="${HOME}/.local/share/${INSTALL_APP_NAME}"
+  WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/agents-env-install.XXXXXX")" ||
+    fail "$(msg '无法创建临时目录。' 'Cannot create a temporary directory.')"
+  mkdir -p "${WORK_DIRECTORY}/stage/config"
+  # 注册表先下载：清单要从它推导，且 config/agents.json 本身也属于清单。
+  download_resource "config/agents.json" "${WORK_DIRECTORY}/stage/config/agents.json"
+  check_install_file "config/agents.json"
+  build_install_manifest
+  while IFS= read -r rel; do
+    if [ ! -f "${WORK_DIRECTORY}/stage/${rel}" ]; then
+      download_resource "$rel" "${WORK_DIRECTORY}/stage/${rel}"
+    fi
+    check_install_file "$rel"
+  done <"$manifest"
+
+  install_plan="${WORK_DIRECTORY}/plan"
+  plan_installation
+  if [ "$SELF_ACTION" = update ] && [ "$INSTALLED_COMMANDS" -eq 0 ]; then
+    fail "$(msg '尚未安装，请先用 %s 安装。' 'Not installed yet. Install first with %s.' --install)"
+  fi
+  print_installation
+  if [ "$DRY_RUN" = true ]; then
+    info "$(msg '%s：未做任何修改。' '%s: no changes made.' --dry-run)"
+    exit 0
+  fi
+  if ! install_has_changes; then
+    info "$(msg '无需改动。' 'Nothing to change.')"
+    exit 0
+  fi
+  apply_installation
+  case ":${PATH}:" in
+    *":${bin_dir}:"*) ;;
+    *) msg '提示：%s 不在 PATH 中，请把它加入 shell 配置。\n' 'Note: %s is not in PATH. Add it to your shell configuration.\n' "$bin_dir" ;;
+  esac
+  info "$(msg '完成。' 'Done.')"
+  exit 0
+}
+
 main() {
   parse_arguments "$@"
   validate_runtime_dependencies
+  if [ -n "$SELF_ACTION" ]; then
+    validate_self_options
+    manage_installation
+  fi
   if [ "$INTERACTIVE" = true ]; then
     collect_interactive_scope
   fi

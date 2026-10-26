@@ -288,5 +288,101 @@ H9="$(mktemp -d /tmp/fakehome.XXXXXX)"
 AGENTS_ENV_SETUP_LANG=en run --scope user --source "$SAME" --target "$H9" --force >/dev/null 2>&1
 cmp -s "$H7/twins/ENTRY.md" "$H9/twins/ENTRY.md" && ok "英文界面写入的内容与中文一致" || bad "写入内容随界面语言变化"
 
+head_ "安装为命令与自更新"
+# 前提：注册表须声明至少一个模板变体，否则渲染复用数据的断言会空转。
+declared_template_paths() {
+  jq -r '[.agents[] | .instructions // {} | (.template_override // {}), (.template_frontmatter // {}) | .[]? | select(type == "string")] | .[]' "$REGISTRY"
+}
+[ -n "$(declared_template_paths)" ] ||
+  { printf '前提不满足：注册表没有声明任何模板变体。\n' >&2; exit 1; }
+
+# 上游用工作区副本模拟：改动它即模拟远端出了新版本。假 curl 按路径从上游取文件，并记下每次请求。
+UP="$(mktemp -d /tmp/upstream.XXXXXX)"
+mkdir -p "$UP/config" "$UP/templates"
+cp "$WORKSPACE/setup-skills.sh" "$WORKSPACE/setup-instructions.sh" "$UP/"
+cp "$REGISTRY" "$UP/config/"
+cp -R "$WORKSPACE/templates/." "$UP/templates/"
+IFAKE="$(mktemp -d /tmp/ifake.XXXXXX)"
+LOG="$IFAKE/requests"
+: >"$LOG"
+cat >"$IFAKE/curl" <<'FAKE'
+#!/usr/bin/env bash
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\n' "$url" >>"$FAKE_LOG"
+rest="${url#*/agents-env/}"
+rel="${rest#*/}"
+[ -f "$FAKE_UPSTREAM/$rel" ] || exit 22
+mkdir -p "$(dirname "$out")"
+cp "$FAKE_UPSTREAM/$rel" "$out"
+FAKE
+chmod +x "$IFAKE/curl"
+
+# $1 HOME，其余为要执行的命令：在假 curl 环境下运行
+with_home() {
+  home="$1"
+  shift
+  env PATH="$IFAKE:$PATH" HOME="$home" FAKE_UPSTREAM="$UP" FAKE_LOG="$LOG" "$@"
+}
+
+# 以 curl | bash 同形态执行，在无检出的目录里运行。$1 HOME，$2 作为标准输入的脚本，其余为参数
+pipe_install() {
+  home="$1"
+  script="$2"
+  shift 2
+  (cd "$IFAKE" && cat "$script" | with_home "$home" "$SHELL_BIN" -s -- "$@")
+}
+
+H_I="$(mktemp -d /tmp/instI.XXXXXX)"
+pipe_install "$H_I" "$UP/setup-instructions.sh" --install >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ -x "$H_I/.local/bin/setup-instructions" ] && [ -x "$H_I/.local/bin/setup-skills" ] &&
+  ok "管道执行 --install：两个命令装入 ~/.local/bin" || bad "管道执行 --install 未装好命令（退出码 $rc）"
+missing="$(declared_template_paths | while IFS= read -r p; do
+  [ -f "$H_I/.local/share/agents-env/$p" ] || printf '%s ' "$p"
+done)"
+[ -z "$missing" ] && ok "注册表声明的模板变体全部装入" || bad "缺少模板变体：$missing"
+
+# 已安装的命令只用已安装的数据渲染：断网也能完成，且结果与从检出渲染的入口逐字节一致。
+H_REF="$(mktemp -d /tmp/instR.XXXXXX)"
+run --scope user --source "$WORKSPACE" --target "$H_REF" --force >/dev/null 2>&1
+: >"$LOG"
+env PATH="$IFAKE:$PATH" HOME="$H_I" FAKE_UPSTREAM=/nonexistent FAKE_LOG="$LOG" \
+  "$SHELL_BIN" "$H_I/.local/bin/setup-instructions" --scope user --target "$H_I" --force >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$LOG" ] &&
+  ok "已安装的命令断网也能渲染入口，且不发起请求" || bad "已安装的命令仍然联网或失败（退出码 $rc）"
+mismatch=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  cmp -s "$H_I/$p" "$H_REF/$p" || mismatch=$((mismatch + 1))
+done <<EOF
+$(entry_paths user)
+EOF
+[ "$mismatch" -eq 0 ] && ok "渲染结果与从检出渲染的入口逐字节一致" || bad "$mismatch 个入口与检出渲染的结果不一致"
+
+# 上游模板变了：--update 同时更新命令与数据。
+printf '<!-- upstream v2 -->\n' >>"$UP/templates/entry-user.md"
+with_home "$H_I" "$SHELL_BIN" "$H_I/.local/bin/setup-instructions" --update >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$H_I/.local/share/agents-env/templates/entry-user.md" "$UP/templates/entry-user.md" &&
+  ok "--update 更新模板数据" || bad "--update 未更新模板数据（退出码 $rc）"
+cp "$WORKSPACE/templates/entry-user.md" "$UP/templates/"
+
+# 与范围、Agent 过滤相关的选项在下载前拦截。
+: >"$LOG"
+H_C="$(mktemp -d /tmp/instC.XXXXXX)"
+with_home "$H_C" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" --install --agent x >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && [ ! -e "$H_C/.local" ] &&
+  ok "--install 与 --agent 冲突时在下载前拦截" || bad "选项冲突未被拦截（退出码 $rc）"
+
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
