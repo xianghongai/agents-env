@@ -174,6 +174,15 @@ setup-skills --update --dry-run
 
 `--install` and `--update` accept only `--branch` and `--dry-run` alongside them. Other options are rejected.
 
+To refresh only the registry, leaving the scripts and templates as they are, use `update-registry`:
+
+```bash
+setup-skills update-registry --dry-run
+setup-skills update-registry
+```
+
+The new registry may reference templates that are not installed yet. In that case the command stops before writing anything and asks for `--update` first.
+
 ### Where the data comes from
 
 An installed command gets the registry in this order:
@@ -359,6 +368,7 @@ Each script is self-contained and needs no Node.js or Python. When a script runs
 | `--update` | Update the installed commands and their data. Accepts only `--branch` and `--dry-run` |
 | `interactive` | Start the interactive wizard, also as `-i` or `--interactive`. Takes no other arguments |
 | `help` | Show help and exit, same as no arguments, `-h` or `--help` |
+| `update-registry` | Refresh only the installed registry (`config/agents.json`). Accepts only `--branch` and `--dry-run` |
 | `-h, --help` | Show help and exit |
 
 ### `setup-instructions.sh`
@@ -376,6 +386,7 @@ Each script is self-contained and needs no Node.js or Python. When a script runs
 | `--update` | Update the installed commands and their data. Accepts only `--branch` and `--dry-run` |
 | `interactive` | Start the interactive wizard, also as `-i` or `--interactive`. Takes no other arguments |
 | `help` | Show help and exit, same as no arguments, `-h` or `--help` |
+| `update-registry` | Refresh only the installed registry (`config/agents.json`). Accepts only `--branch` and `--dry-run` |
 | `-h, --help` | Show help and exit |
 
 Adding or changing an agent is covered in the [registry guide](config/README.md).

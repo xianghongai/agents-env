@@ -720,6 +720,97 @@ rc=$?
 [ "$rc" -ne 0 ] && [ ! -s "$LOG" ] &&
   ok "--update 与 --force 冲突时在下载前拦截" || bad "--update 与 --force 未被拦截（退出码 $rc）"
 
+head_ "update-registry：只更新注册表，脚本与模板不动"
+# 上游副本：在原上游注册表上加一个顶层字段，模拟远端只改了注册表。原上游保持不变，其它用例照常使用。
+UPR="$(mktemp -d /tmp/upreg.XXXXXX)"
+cp -R "$UP/." "$UPR/"
+jq '. + {"revision": 2}' "$UP/config/agents.json" >"$UPR/revised.json" && mv "$UPR/revised.json" "$UPR/config/agents.json"
+# 与 with_home 相同，但上游换成 $1，$2 为 HOME，其余为命令
+with_upstream() {
+  upstream="$1"
+  home="$2"
+  shift 2
+  env PATH="$FAKEBIN:$PATH" HOME="$home" FAKE_UPSTREAM="$upstream" FAKE_LOG="$LOG" "$@"
+}
+
+H_R="$(mktemp -d /tmp/instR.XXXXXX)"
+pipe_install "$H_R" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+REG_R="$H_R/.local/share/agents-env/config/agents.json"
+[ -f "$REG_R" ] || { printf '前提不满足：未能安装，无法验证 update-registry。\n' >&2; exit 1; }
+SNAP_R="$(mktemp -d /tmp/snapR.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_R/"
+
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry --dry-run >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$REG_R" "$UP/config/agents.json" && [ ! -e "$REG_R.local.bak" ] && same_tree "$H_R/.local" "$SNAP_R/.local" &&
+  ok "update-registry --dry-run 不改动任何文件" || bad "update-registry --dry-run 改动了文件（退出码 $rc）"
+
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$REG_R" "$UPR/config/agents.json" && cmp -s "$REG_R.local.bak" "$UP/config/agents.json" && [ ! -e "$REG_R.new" ] &&
+  ok "update-registry 替换注册表，原件备份为 .local.bak" || bad "update-registry 替换注册表不正确（退出码 $rc）"
+same_tree "$H_R/.local/bin" "$SNAP_R/.local/bin" &&
+  same_tree "$H_R/.local/share/agents-env/templates" "$SNAP_R/.local/share/agents-env/templates" &&
+  ok "命令与模板未被改动" || bad "update-registry 改动了命令或模板"
+
+SNAP_R2="$(mktemp -d /tmp/snapR2.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_R2/"
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && same_tree "$H_R/.local" "$SNAP_R2/.local" &&
+  ok "重复 update-registry 无变化" || bad "重复 update-registry 仍有变化（退出码 $rc）"
+
+H_N="$(mktemp -d /tmp/instN.XXXXXX)"
+with_upstream "$UPR" "$H_N" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$H_N/.local" ] &&
+  ok "未安装时拒绝，且不创建任何目录" || bad "未安装时未拒绝（退出码 $rc）"
+
+# 新注册表引用的模板未装好：中止，注册表保持原样。
+H_T="$(mktemp -d /tmp/instT.XXXXXX)"
+pipe_install "$H_T" "$UP/setup-skills.sh" --install >/dev/null 2>&1
+rm -f "$H_T/.local/share/agents-env/templates/entry-project.md"
+SNAP_T="$(mktemp -d /tmp/snapT.XXXXXX)"
+cp -R "$H_T/.local" "$SNAP_T/"
+with_upstream "$UPR" "$H_T" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_T/.local" "$SNAP_T/.local" &&
+  ok "引用的模板未安装时中止，什么都不改" || bad "模板缺失时未中止（退出码 $rc）"
+
+# 远端注册表不合法（JSON 损坏，或某 Scope 的 mode 非法）：校验失败，写入之前中止。
+UPB="$(mktemp -d /tmp/upbad.XXXXXX)"
+cp -R "$UP/." "$UPB/"
+printf '{\n' >"$UPB/config/agents.json"
+SNAP_B="$(mktemp -d /tmp/snapB.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_B/"
+with_upstream "$UPB" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_R/.local" "$SNAP_B/.local" &&
+  ok "远端注册表 JSON 损坏时在写入前中止" || bad "JSON 损坏时未中止（退出码 $rc）"
+
+UPM="$(mktemp -d /tmp/upmode.XXXXXX)"
+cp -R "$UP/." "$UPM/"
+jq '.agents |= with_entries(.value.skills.scope.project.mode = "bogus")' "$UP/config/agents.json" >"$UPM/revised.json" &&
+  mv "$UPM/revised.json" "$UPM/config/agents.json"
+SNAP_M="$(mktemp -d /tmp/snapM.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_M/"
+with_upstream "$UPM" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_R/.local" "$SNAP_M/.local" &&
+  ok "远端注册表的 mode 非法时在写入前中止" || bad "mode 非法时未中止（退出码 $rc）"
+
+# 与范围、安装类选项同用：在下载之前拦下，不发出任何请求。
+: >"$LOG"
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry --scope user >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && same_tree "$H_R/.local" "$SNAP_M/.local" &&
+  ok "update-registry 与 --scope 同用时在下载前拦截" || bad "update-registry 与 --scope 同用未拦截（退出码 $rc）"
+: >"$LOG"
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry --install >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && same_tree "$H_R/.local" "$SNAP_M/.local" &&
+  ok "update-registry 与 --install 同用时在下载前拦截" || bad "update-registry 与 --install 同用未拦截（退出码 $rc）"
+
 head_ "悬空软链清理（prune 子命令）"
 # 夹具：Agent 的逐项软链与共享库各一个有效 Skill，再加上几种形态的软链与目录，断言只看这些形态。
 PH="$(fresh_home)"

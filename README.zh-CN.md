@@ -174,6 +174,15 @@ setup-skills --update --dry-run
 
 `--install` 与 `--update` 只能和 `--branch`、`--dry-run` 同用，其它选项会被拒绝。
 
+只想更新注册表，脚本与模板保持原样，用 `update-registry`：
+
+```bash
+setup-skills update-registry --dry-run
+setup-skills update-registry
+```
+
+新注册表可能引用了尚未安装的模板。此时命令在写入任何内容之前中止，并提示先用 `--update`。
+
 ### 数据来源
 
 安装后的命令按以下顺序取得注册表：
@@ -359,6 +368,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | `--update` | 更新已安装的命令与数据。只能与 `--branch`、`--dry-run` 同用 |
 | `interactive` | 进入交互向导，也可写作 `-i` 或 `--interactive`。不接受其它参数 |
 | `help` | 显示帮助并退出，与零参数、`-h`、`--help` 相同 |
+| `update-registry` | 只更新已安装的注册表（`config/agents.json`），脚本与模板不动。只能与 `--branch`、`--dry-run` 同用 |
 | `-h, --help` | 显示帮助并退出 |
 
 ### `setup-instructions.sh`
@@ -376,6 +386,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | `--update` | 更新已安装的命令与数据。只能与 `--branch`、`--dry-run` 同用 |
 | `interactive` | 进入交互向导，也可写作 `-i` 或 `--interactive`。不接受其它参数 |
 | `help` | 显示帮助并退出，与零参数、`-h`、`--help` 相同 |
+| `update-registry` | 只更新已安装的注册表（`config/agents.json`），脚本与模板不动。只能与 `--branch`、`--dry-run` 同用 |
 | `-h, --help` | 显示帮助并退出 |
 
 增删或调整 Agent 的做法见[注册表维护指南](config/README.md)。

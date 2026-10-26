@@ -71,6 +71,8 @@ RESOURCE_SOURCE_LABEL=""
 SOURCE_KIND=""
 # install 或 update，空表示普通的入口文件安装流程。
 SELF_ACTION=""
+# 子命令：目前只有 update-registry，只更新已安装的注册表。
+SUBCOMMAND=""
 # 顶层捕获调用路径：Zsh 的 FUNCTION_ARGZERO 默认开启，函数内 $0 会变成函数名。
 SCRIPT_INVOCATION="$0"
 INTERACTIVE=false
@@ -94,6 +96,7 @@ print_usage() {
   if [ "$UI_LANG" != "zh-CN" ]; then
     cat <<'EOF'
 Usage: setup-instructions.sh [options]
+       setup-instructions.sh update-registry [--branch <name>] [--dry-run]
        setup-instructions.sh interactive
        setup-instructions.sh help
 
@@ -125,6 +128,11 @@ Behavior:
   adds a missing command. Changed files are replaced, and originals are kept as .local.bak.
   Only --branch and --dry-run may accompany them; neither asks for confirmation.
 
+  Update registry: update-registry refreshes only the installed registry (config/agents.json),
+  leaving the scripts and templates alone. Templates the new registry references must
+  already be installed, or it stops and asks for --update first. Only --branch and
+  --dry-run may accompany it, and it does not ask for confirmation.
+
 Examples:
   setup-instructions.sh --scope user
   setup-instructions.sh --scope project --target ./my-repo --dry-run
@@ -132,11 +140,13 @@ Examples:
   setup-instructions.sh interactive
   setup-instructions.sh --install
   setup-instructions.sh --update --dry-run
+  setup-instructions.sh update-registry --dry-run
 EOF
     return 0
   fi
   cat <<'EOF'
 用法：setup-instructions.sh [选项]
+      setup-instructions.sh update-registry [--branch <name>] [--dry-run]
       setup-instructions.sh interactive
       setup-instructions.sh help
 
@@ -167,6 +177,10 @@ EOF
   有变化的文件直接替换，原件保留为 .local.bak。
   只能与 --branch、--dry-run 同用，两者都不需要确认。
 
+  更新注册表：update-registry 只更新已安装的注册表（config/agents.json），脚本与模板一概不动。
+  新注册表引用的模板须已安装，否则中止并提示先用 --update。只能与 --branch、--dry-run
+  同用，不需要确认。
+
 示例：
   setup-instructions.sh --scope user
   setup-instructions.sh --scope project --target ./my-repo --dry-run
@@ -174,6 +188,7 @@ EOF
   setup-instructions.sh interactive
   setup-instructions.sh --install
   setup-instructions.sh --update --dry-run
+  setup-instructions.sh update-registry --dry-run
 EOF
 }
 
@@ -233,6 +248,10 @@ parse_arguments() {
       [ "$#" -eq 1 ] || fail "$(msg '%s 只能单独使用。' '%s must be used alone.' "$1")"
       INTERACTIVE=true
       return 0
+      ;;
+    update-registry)
+      SUBCOMMAND="$1"
+      shift
       ;;
   esac
 
@@ -1033,6 +1052,15 @@ installed_data_directory() {
   return 0
 }
 
+# update-registry 只更新注册表，与范围、来源、覆盖及安装类选项无关，在下载之前拦下。
+validate_registry_update_options() {
+  [ "$SUBCOMMAND" = update-registry ] || return 0
+  if [ -n "$SCOPE" ] || [ -n "$SOURCE_DIRECTORY" ] || [ -n "$TARGET_ROOT" ] || [ -n "$AGENT_FILTER" ] ||
+    [ "$FORCE" = true ] || [ -n "$SELF_ACTION" ]; then
+    fail "$(msg 'update-registry 只能与 --branch 和 --dry-run 同用。' 'update-registry can only be combined with --branch and --dry-run.')"
+  fi
+}
+
 # --install 与 --update 只作用于固定位置。其它范围、来源或覆盖类选项与之无关，
 # 在下载之前拦下，免得用户以为它们生效了。
 validate_self_options() {
@@ -1067,19 +1095,28 @@ check_install_file() {
     fail "$(msg '%s 未通过校验，未做任何修改。' '%s failed validation; nothing was changed.' "$1")"
 }
 
-# 清单 = 两个脚本、注册表、通用模板，加上注册表声明的模板变体（整份替换与前置块）。
+# 注册表声明的模板：通用模板，加上各 Agent 声明的模板变体（整份替换与前置块）。$1 注册表路径。
+registry_template_paths() {
+  printf '%s\n' templates/entry-user.md templates/entry-project.md
+  jq -r '[.agents[] | .instructions // {} | (.template_override // {}), (.template_frontmatter // {}) | .[]? | select(type == "string")] | .[]' "$1"
+}
+
 # 路径只允许仓库内的相对路径且不含 .. 段，注册表因此无法把写入引到数据目录之外。
+check_registry_path() {
+  case "$1" in
+    "" | /* | *..*) fail "$(msg '注册表中的路径不合法：%s' 'Invalid path in the registry: %s' "$1")" ;;
+  esac
+}
+
+# 清单 = 两个脚本、注册表，加上注册表声明的模板。
 build_install_manifest() {
   manifest="${WORK_DIRECTORY}/manifest"
   {
-    printf '%s\n' setup-skills.sh setup-instructions.sh config/agents.json templates/entry-user.md templates/entry-project.md
-    jq -r '[.agents[] | .instructions // {} | (.template_override // {}), (.template_frontmatter // {}) | .[]? | select(type == "string")] | .[]' \
-      "${WORK_DIRECTORY}/stage/config/agents.json"
+    printf '%s\n' setup-skills.sh setup-instructions.sh config/agents.json
+    registry_template_paths "${WORK_DIRECTORY}/stage/config/agents.json"
   } | awk '!seen[$0]++' >"$manifest"
   while IFS= read -r rel; do
-    case "$rel" in
-      "" | /* | *..*) fail "$(msg '注册表中的路径不合法：%s' 'Invalid path in the registry: %s' "$rel")" ;;
-    esac
+    check_registry_path "$rel"
   done <"$manifest"
 }
 
@@ -1236,9 +1273,69 @@ manage_installation() {
   exit 0
 }
 
+# 暂存的注册表须通过正常运行时的校验，两个 Scope 都要过，免得装上一份另一个 Scope 跑不起来的注册表。
+validate_staged_registry() {
+  for scope in user project; do
+    (
+      SCOPE="$scope"
+      RESOURCE_DIRECTORY="${WORK_DIRECTORY}/stage"
+      validate_registry
+    ) || exit 1
+  done
+}
+
+# 只更新已安装的 config/agents.json：脚本与模板一概不动，适合 Agent 清单变化而脚本无需升级的情形。
+# 新注册表引用的模板须已安装，否则中止，渲染时才不会缺文件；此时应先用 --update 同步。
+manage_registry_update() {
+  [ -n "${HOME:-}" ] ||
+    fail "$(msg '未设置 %s，无法确定安装位置。' 'HOME is not set, so the install location cannot be determined.' HOME)"
+  data_dir="${HOME}/.local/share/${INSTALL_APP_NAME}"
+  dest="${data_dir}/config/agents.json"
+  [ -f "$dest" ] ||
+    fail "$(msg '尚未安装，请先用 %s 安装。' 'Not installed yet. Install first with %s.' --install)"
+  WORK_DIRECTORY="$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/agents-env-install.XXXXXX")" ||
+    fail "$(msg '无法创建临时目录。' 'Cannot create a temporary directory.')"
+  mkdir -p "${WORK_DIRECTORY}/stage/config"
+  download_resource "config/agents.json" "${WORK_DIRECTORY}/stage/config/agents.json"
+  check_install_file "config/agents.json"
+  validate_staged_registry
+
+  registry_template_paths "${WORK_DIRECTORY}/stage/config/agents.json" >"${WORK_DIRECTORY}/templates"
+  while IFS= read -r rel; do
+    check_registry_path "$rel"
+    [ -s "${data_dir}/${rel}" ] ||
+      fail "$(msg '新注册表引用的模板 %s 尚未安装，请先用 %s 同步。' 'The new registry references template %s, which is not installed. Sync it first with %s.' "$rel" --update)"
+  done <"${WORK_DIRECTORY}/templates"
+
+  classify_target "$dest" "${WORK_DIRECTORY}/stage/config/agents.json"
+  if [ "$action" = skip-link ]; then
+    fail "$(msg '%s 是软链，不覆盖。' '%s is a symlink and is not replaced.' "$dest")"
+  fi
+  info "$(msg '[更新注册表]' '[Update registry]')"
+  info "$(msg '来源：GitHub %s@%s' 'Source: GitHub %s@%s' "$GITHUB_REPOSITORY" "$GITHUB_BRANCH")"
+  printf '  %s  %s\n' "$dest" "$(install_label "$action")"
+  if [ "$DRY_RUN" = true ]; then
+    info "$(msg '%s：未做任何修改。' '%s: no changes made.' --dry-run)"
+    exit 0
+  fi
+  if [ "$action" = same ]; then
+    info "$(msg '无需改动。' 'Nothing to change.')"
+    exit 0
+  fi
+  cp "${WORK_DIRECTORY}/stage/config/agents.json" "${dest}.new"
+  cp "$dest" "${dest}.local.bak"
+  mv "${dest}.new" "$dest"
+  info "$(msg '完成。' 'Done.')"
+  exit 0
+}
+
 main() {
   parse_arguments "$@"
   validate_runtime_dependencies
+  validate_registry_update_options
+  if [ "$SUBCOMMAND" = update-registry ]; then
+    manage_registry_update
+  fi
   if [ -n "$SELF_ACTION" ]; then
     validate_self_options
     manage_installation

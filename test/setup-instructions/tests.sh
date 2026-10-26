@@ -384,6 +384,69 @@ rc=$?
 [ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && [ ! -e "$H_C/.local" ] &&
   ok "--install 与 --agent 冲突时在下载前拦截" || bad "选项冲突未被拦截（退出码 $rc）"
 
+head_ "update-registry：只更新注册表，脚本与模板不动"
+# 以目录树内容比对，不比时间戳。$1 目录，$2 快照目录
+same_tree() {
+  diff -r "$1" "$2" >/dev/null
+}
+# 上游副本：在原上游注册表上加一个顶层字段，模拟远端只改了注册表。原上游保持不变。
+UPR="$(mktemp -d /tmp/upreg.XXXXXX)"
+cp -R "$UP/." "$UPR/"
+jq '. + {"revision": 2}' "$UP/config/agents.json" >"$UPR/revised.json" && mv "$UPR/revised.json" "$UPR/config/agents.json"
+# 与 with_home 相同，但上游换成 $1，$2 为 HOME，其余为命令
+with_upstream() {
+  upstream="$1"
+  home="$2"
+  shift 2
+  env PATH="$IFAKE:$PATH" HOME="$home" FAKE_UPSTREAM="$upstream" FAKE_LOG="$LOG" "$@"
+}
+
+H_R="$(mktemp -d /tmp/instR.XXXXXX)"
+pipe_install "$H_R" "$UP/setup-instructions.sh" --install >/dev/null 2>&1
+REG_R="$H_R/.local/share/agents-env/config/agents.json"
+[ -f "$REG_R" ] || { printf '前提不满足：未能安装，无法验证 update-registry。\n' >&2; exit 1; }
+SNAP_R="$(mktemp -d /tmp/snapR.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_R/"
+
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry --dry-run >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$REG_R" "$UP/config/agents.json" && same_tree "$H_R/.local" "$SNAP_R/.local" &&
+  ok "update-registry --dry-run 不改动任何文件" || bad "update-registry --dry-run 改动了文件（退出码 $rc）"
+
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$REG_R" "$UPR/config/agents.json" && cmp -s "$REG_R.local.bak" "$UP/config/agents.json" && [ ! -e "$REG_R.new" ] &&
+  ok "update-registry 替换注册表，原件备份为 .local.bak" || bad "update-registry 替换注册表不正确（退出码 $rc）"
+same_tree "$H_R/.local/bin" "$SNAP_R/.local/bin" &&
+  same_tree "$H_R/.local/share/agents-env/templates" "$SNAP_R/.local/share/agents-env/templates" &&
+  ok "命令与模板未被改动" || bad "update-registry 改动了命令或模板"
+
+H_N="$(mktemp -d /tmp/instN.XXXXXX)"
+with_upstream "$UPR" "$H_N" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$H_N/.local" ] &&
+  ok "未安装时拒绝，且不创建任何目录" || bad "未安装时未拒绝（退出码 $rc）"
+
+# 新注册表引用的模板未装好：中止，注册表保持原样。
+H_T="$(mktemp -d /tmp/instT.XXXXXX)"
+pipe_install "$H_T" "$UP/setup-instructions.sh" --install >/dev/null 2>&1
+rm -f "$H_T/.local/share/agents-env/templates/entry-project.md"
+SNAP_T="$(mktemp -d /tmp/snapT.XXXXXX)"
+cp -R "$H_T/.local" "$SNAP_T/"
+with_upstream "$UPR" "$H_T" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && same_tree "$H_T/.local" "$SNAP_T/.local" &&
+  ok "引用的模板未安装时中止，什么都不改" || bad "模板缺失时未中止（退出码 $rc）"
+
+# 与范围同用：在下载之前拦下，不发出任何请求。
+SNAP_U="$(mktemp -d /tmp/snapU.XXXXXX)"
+cp -R "$H_R/.local" "$SNAP_U/"
+: >"$LOG"
+with_upstream "$UPR" "$H_R" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" update-registry --scope user >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && same_tree "$H_R/.local" "$SNAP_U/.local" &&
+  ok "update-registry 与 --scope 同用时在下载前拦截" || bad "update-registry 与 --scope 同用未拦截（退出码 $rc）"
+
 head_ "入口：零参数与 help 只显示帮助，交互向导只由 interactive 进入"
 PE="$(fresh_home)"
 before_e="$(find "$PE" | sort | md5sum)"
