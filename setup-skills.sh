@@ -68,6 +68,8 @@ BRANCH_GIVEN=false
 DRY_RUN=false
 FORCE=false
 ASSUME_YES=false
+# 子命令，目前只有 prune：只清理悬空软链，不获取、不建链。
+SUBCOMMAND=""
 WORK_DIRECTORY=""
 CLONE_DIRECTORY=""
 RESOURCE_DIRECTORY=""
@@ -100,6 +102,7 @@ print_usage() {
   if [ "$UI_LANG" != "zh-CN" ]; then
     cat <<'EOF'
 Usage: setup-skills.sh [options]
+       setup-skills.sh prune [options]
 
 Fetch Skills and link them into each agent as declared in the registry.
 Without --repo, only links.
@@ -152,6 +155,13 @@ Behavior:
         adds a missing command. Changed files are replaced, and originals are kept as .local.bak.
         Only --branch and --dry-run may accompany them; neither asks for confirmation.
 
+  Prune: removes dangling symlinks (targets that do not exist) directly under
+        each agent's Skills directory and under the store, including links pointing outside the
+        store. It does nothing else: no fetching and no linking. Real directories and files are
+        never touched, and nothing is removed recursively. A link to a target that is only
+        temporarily unavailable, such as an unmounted disk, looks dangling too, so preview with
+        --dry-run first. Only --scope, --target, --source, --branch, --dry-run and --yes may accompany it.
+
 Examples:
   setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
   setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
@@ -160,11 +170,13 @@ Examples:
   setup-skills.sh --scope user --force
   setup-skills.sh --install
   setup-skills.sh --update --dry-run
+  setup-skills.sh prune --scope user --dry-run
 EOF
     return 0
   fi
   cat <<'EOF'
 用法：setup-skills.sh [选项]
+      setup-skills.sh prune [选项]
 
 获取 Skills 并按注册表声明为各 Agent 建立软链。
 省略 --repo 时不获取，只做软链。
@@ -210,6 +222,11 @@ EOF
         有变化的文件直接替换，原件保留为 .local.bak。
         只能与 --branch、--dry-run 同用，两者都不需要确认。
 
+  清理悬空软链：prune 子命令删除各 Agent 的 Skills 目录与共享库直接子项中目标不存在的软链，
+        指向共享库之外的也包括在内。它只做这一件事：不获取，也不建链。实体目录与普通文件不碰，
+        也不递归。目标只是暂时不可达（例如磁盘未挂载）的软链同样视为悬空，建议先用 --dry-run 预览。
+        只能与 --scope、--target、--source、--branch、--dry-run、--yes 同用。
+
 示例：
   setup-skills.sh --scope user --repo https://github.com/someone/my-skills.git
   setup-skills.sh --scope project --ref v1.2.0 --repo git@github.com:someone/my-skills.git
@@ -218,6 +235,7 @@ EOF
   setup-skills.sh --scope user --force
   setup-skills.sh --install
   setup-skills.sh --update --dry-run
+  setup-skills.sh prune --scope user --dry-run
 EOF
 }
 
@@ -265,6 +283,14 @@ parse_arguments() {
     INTERACTIVE=true
     return 0
   fi
+
+  # 命令只认第一个位置，之后的参数仍按选项解析。
+  case "$1" in
+    prune)
+      SUBCOMMAND=prune
+      shift
+      ;;
+  esac
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1003,6 +1029,48 @@ plan_stale_links() {
   done <"${WORK_DIRECTORY}/links"
 }
 
+# 悬空软链：软链本身存在，目标却解析不到（循环链接同样如此）。
+is_dangling() {
+  [ -L "$1" ] && [ ! -e "$1" ]
+}
+
+# 只看 $1（相对 Scope 根的目录）的直接子项，不递归。目录本身是软链时整体判断，
+# 有效的目录软链不穿透扫描，否则会清理到别处去。目标不存在即清理，不论指向共享库之内还是之外。
+# 实体目录与普通文件一概不碰。$1 展示名，$2 相对 Scope 根的目录
+plan_dangling_in() {
+  scan_dir="${TARGET_ROOT}/$2"
+  if is_dangling "$scan_dir"; then
+    add_plan "prune-dangling" "$1" "$2" "-> $(readlink "$scan_dir")"
+    return 0
+  fi
+  if [ ! -d "$scan_dir" ] || [ -L "$scan_dir" ]; then
+    return 0
+  fi
+  find "$scan_dir" -mindepth 1 -maxdepth 1 -type l 2>/dev/null | sort >"${WORK_DIRECTORY}/dangling" || true
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    is_dangling "$candidate" || continue
+    name="$(basename "$candidate")"
+    # 计划行以 | 分隔，名称含 | 时路径会错位，这类条目跳过。
+    case "$name" in *"|"*) continue ;; esac
+    add_plan "prune-dangling" "$1" "$2/${name}" "-> $(readlink "$candidate")"
+  done <"${WORK_DIRECTORY}/dangling"
+}
+
+# prune 子命令的清理计划：各 Agent 的 Skills 目录与共享库里的悬空软链。与软链模式无关。
+plan_prune() {
+  selected_agent_ids >"${WORK_DIRECTORY}/prune-ids"
+  while IFS= read -r agent_id; do
+    [ -n "$agent_id" ] || continue
+    skills_path="$(agent_field "$agent_id" ".skills.scope[\$scope].path")"
+    if [ "$skills_path" = "standard" ]; then
+      continue
+    fi
+    plan_dangling_in "$(agent_field "$agent_id" ".name")" "$skills_path"
+  done <"${WORK_DIRECTORY}/prune-ids"
+  plan_dangling_in "$(msg '共享库' 'store')" "$SKILLS_ROOT"
+}
+
 plan_link() {
   plan_legacy_backups
   selected_agent_ids >"${WORK_DIRECTORY}/ids"
@@ -1109,8 +1177,9 @@ print_plan() {
       if (act == "link-each" || act == "link-dir") return t("新建软链", "new link")
       if (act == "relink" || act == "relink-dir") return t("修正软链", "fix link")
       if (act == "move-bak") return t("迁出备份", "move out")
-      if (act == "prune-stale") return t("失效软链", "stale link")
-      if (act == "prune-link") return t("冗余软链", "extra link")
+      if (act == "prune-stale") return t("失效软链", "stale link   ")
+      if (act == "prune-link") return t("冗余软链", "extra link   ")
+      if (act == "prune-dangling") return t("悬空软链", "dangling link")
       if (act == "fetch-new") return t("新增", "new    ")
       if (act == "fetch-replace") return t("替换", "replace")
       if (act == "fallback") return t("回退", "fallback")
@@ -1142,7 +1211,7 @@ print_plan() {
         add_who(rk, (act == "fetch-skip") ? base_of(entry) : who)
         next
       }
-      if (act == "prune-link" || act == "prune-stale") section = "prune"
+      if (act == "prune-link" || act == "prune-stale" || act == "prune-dangling") section = "prune"
       else if (index(passive, " " act " ") > 0) section = "note"
       else section = "change"
       k = act SUBSEP entry
@@ -1260,6 +1329,13 @@ apply_plan() {
         [ -L "$target" ] && rm "$target"
         APPLIED=true
         ;;
+      prune-dangling)
+        # 计划之后目标可能已经就位或被改动，删除前再确认一次仍是悬空软链。
+        if is_dangling "$target"; then
+          rm "$target"
+          APPLIED=true
+        fi
+        ;;
       *)
         # 已就绪与需注意的条目只供展示，没有要执行的动作。
         ;;
@@ -1328,6 +1404,15 @@ validate_self_options() {
     [ -n "$REPO_REF" ] || [ -n "$REPO_SUBPATH" ] || [ -n "$SKILL_FILTER" ] ||
     [ "$FORCE" = true ] || [ "$ASSUME_YES" = true ]; then
     fail "$(msg '%s 只能与 %s 和 %s 同用。' '%s can only be combined with %s and %s.' "--${SELF_ACTION}" --branch --dry-run)"
+  fi
+}
+
+# prune 只清理，不获取、不建链，因此不接受获取与安装相关的选项。
+validate_prune_options() {
+  [ "$SUBCOMMAND" = prune ] || return 0
+  if [ -n "$REPO" ] || [ -n "$REPO_REF" ] || [ -n "$REPO_SUBPATH" ] || [ -n "$SKILL_FILTER" ] ||
+    [ "$FORCE" = true ] || [ -n "$SELF_ACTION" ]; then
+    fail "$(msg 'prune 只能与 --scope、--target、--source、--branch、--dry-run、--yes 同用。' 'prune can only be combined with --scope, --target, --source, --branch, --dry-run and --yes.')"
   fi
 }
 
@@ -1527,6 +1612,7 @@ manage_installation() {
 main() {
   parse_arguments "$@"
   validate_runtime_dependencies
+  validate_prune_options
   if [ -n "$SELF_ACTION" ]; then
     validate_self_options
     manage_installation
@@ -1547,14 +1633,19 @@ main() {
 
   print_context
 
-  if [ -n "$REPO" ]; then
-    clone_repository
-    run_phase "$(msg '获取' 'Fetch')" plan_fetch
-  fi
+  if [ "$SUBCOMMAND" = prune ]; then
+    run_phase "$(msg '清理' 'Prune')" plan_prune
+  else
+    # 克隆即完成 Skill 识别与校验，必须先于任何副作用。
+    if [ -n "$REPO" ]; then
+      clone_repository
+      run_phase "$(msg '获取' 'Fetch')" plan_fetch
+    fi
 
-  # 软链阶段读取共享库的真实内容。获取阶段若被跳过或取消，这里看到的就是
-  # 未变的现状：两个阶段解耦，随时可以只跑其中一个。
-  run_phase "$(msg '软链' 'Link')" plan_link
+    # 软链阶段读取共享库的真实内容。获取阶段若被跳过或取消，这里看到的就是
+    # 未变的现状：两个阶段解耦，随时可以只跑其中一个。
+    run_phase "$(msg '软链' 'Link')" plan_link
+  fi
 
   if [ "$DRY_RUN" = true ]; then
     info "$(msg '%s：未做任何修改。' '%s: no changes made.' --dry-run)"

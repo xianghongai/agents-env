@@ -235,7 +235,7 @@ Skill 的落地名称取 `SKILL.md` frontmatter 中的 `name` 字段；缺省时
 | 指向共享库之外的软链，无论是否有效 | 跳过 |
 | 实体目录或文件 | 跳过 |
 
-此外，Agent 目录中指向共享库、但已解析不到 Skill 的软链会被删除，例如 Skill 改名或删除后留下的。别名软链只要还能解析到 Skill 就保留。其它条目一概不动，例如 Agent 自带的 Skill 和指向别处的软链。
+此外，Agent 目录中指向共享库、但已解析不到 Skill 的软链会被删除，例如 Skill 改名或删除后留下的。别名软链只要还能解析到 Skill 就保留。其它条目一概不动，例如 Agent 自带的 Skill 和指向别处的软链。需要清理其它悬空软链时，见「清理悬空软链」。
 
 `link-dir` 以 Agent 的 Skills 目录整体为单位：
 
@@ -262,6 +262,23 @@ Skill 的落地名称取 `SKILL.md` frontmatter 中的 `name` 字段；缺省时
 - 备份不放在共享库内，否则原生读取共享库、或整目录软链到共享库的 Agent 会把备份当成同名 Skill 加载。旧版本遗留在库内的 `<名称>.local.bak` 会在软链阶段迁出。
 
 </details>
+
+### 清理悬空软链
+
+悬空软链指软链本身存在、目标却不存在。常规运行只清理指向共享库、且已解析不到 Skill 的软链（见上文）。`prune` 子命令还会清理以下位置中目标不存在的软链：
+
+- 各 Agent 的 Skills 目录的直接子项。
+- 共享库的直接子项。
+
+指向共享库之外的软链也包括在内。`prune` 只删软链，不获取，也不建链；实体目录与普通文件一概不碰，也不递归进子目录。
+
+共享库里若有与待获取 Skill 同名的悬空软链，获取会失败，因此应先运行 `prune`。
+
+目标只是暂时不可达（例如磁盘未挂载）的软链同样看起来是悬空的，所以建议先预览：
+
+```bash
+setup-skills prune --scope user --dry-run
+```
 
 ---
 
@@ -306,6 +323,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 - **先预览，后执行**：两个脚本的常规运行都先列出完整计划，确认后才动手。`--dry-run` 只展示计划，不做任何修改。
 - **自更新先校验，后替换**：`--install` 与 `--update` 先下载并校验全部文件，任何一个未通过就整体中止。它们不询问确认，因此先用 `--dry-run` 预览。
 - **备份不进版本库**：`.local.bak` 后缀命中常见 `.gitignore` 中的 `*.local.*` 规则。
+- **悬空软链只删软链**：`prune` 只删符号链接，不删目录，也不递归。
 - **相对软链**：移动目录树后链接依然有效。
 
 ## 环境要求
@@ -336,6 +354,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 | `--dry-run` | 只展示计划 |
 | `-y, --yes` | 跳过确认。无终端的环境必须提供 |
 | `-f, --force` | 替换同名 Skill，隐含 `--yes` |
+| `prune`（子命令） | 只清理悬空软链（目标不存在），不获取、不建链。只能与 `--scope`、`--target`、`--source`、`--branch`、`--dry-run`、`--yes` 同用 |
 | `--install` | 把两个命令装到 `~/.local/bin`，数据装到 `~/.local/share/agents-env`。只能与 `--branch`、`--dry-run` 同用 |
 | `--update` | 更新已安装的命令与数据。只能与 `--branch`、`--dry-run` 同用 |
 | `-h, --help` | 显示帮助并退出 |

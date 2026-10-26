@@ -720,5 +720,114 @@ rc=$?
 [ "$rc" -ne 0 ] && [ ! -s "$LOG" ] &&
   ok "--update 与 --force 冲突时在下载前拦截" || bad "--update 与 --force 未被拦截（退出码 $rc）"
 
+head_ "悬空软链清理（prune 子命令）"
+# 夹具：Agent 的逐项软链与共享库各一个有效 Skill，再加上几种形态的软链与目录，断言只看这些形态。
+PH="$(fresh_home)"
+mkdir -p "$PH/${SKILLS_ROOT_USER}/keep-skill"
+printf 'x\n' >"$PH/${SKILLS_ROOT_USER}/keep-skill/SKILL.md"
+run --scope user --source "$WORKSPACE" --target "$PH" --force >/dev/null 2>&1
+[ -L "$PH/${LINK_EACH_USER}/keep-skill" ] ||
+  { printf '前提不满足：初次运行未建立逐项软链。\n' >&2; exit 1; }
+mkdir -p "$PH/outside-real"
+ln -s /nonexistent/foreign-dead "$PH/${LINK_EACH_USER}/foreign-dead"
+ln -s "$PH/outside-real" "$PH/${LINK_EACH_USER}/foreign-live"
+ln -s /nonexistent/store-dangle "$PH/${SKILLS_ROOT_USER}/store-dangle"
+mkdir -p "$PH/${LINK_EACH_USER}/vendor-own"
+printf 'v\n' >"$PH/${LINK_EACH_USER}/vendor-own/SKILL.md"
+ln -s /nonexistent/nested "$PH/${LINK_EACH_USER}/vendor-own/nested-dead"
+
+# 常规运行不清理悬空软链（库外的软链属于用户自己的安排）。
+run --scope user --source "$WORKSPACE" --target "$PH" --force >/dev/null 2>&1
+[ -L "$PH/${LINK_EACH_USER}/foreign-dead" ] && [ -L "$PH/${SKILLS_ROOT_USER}/store-dangle" ] &&
+  ok "常规运行时悬空软链保留" || bad "常规运行时悬空软链被清理"
+
+before_p="$(find "$PH" | sort | md5sum)"
+out_p="$(run prune --scope user --source "$WORKSPACE" --target "$PH" --dry-run 2>&1)"
+[ "$before_p" = "$(find "$PH" | sort | md5sum)" ] && ok "prune --dry-run 不清理" || bad "prune --dry-run 清理了软链"
+printf '%s' "$out_p" | grep -q 'foreign-dead' && ok "计划列出悬空软链" || bad "计划未列出悬空软链"
+printf '%s' "$out_p" | grep -q 'foreign-live' && bad "计划列出了有效的库外软链" || ok "计划不列出有效的软链"
+
+run prune --scope user --source "$WORKSPACE" --target "$PH" --yes >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ ! -L "$PH/${LINK_EACH_USER}/foreign-dead" ] && [ ! -L "$PH/${SKILLS_ROOT_USER}/store-dangle" ] &&
+  ok "prune 清理 Agent 目录与共享库里的悬空软链（库外与库内各一）" || bad "悬空软链未被清理（退出码 $rc）"
+[ -L "$PH/${LINK_EACH_USER}/foreign-live" ] && [ -d "$PH/outside-real" ] &&
+  ok "库外有效的软链保留" || bad "库外有效的软链被误删"
+[ -L "$PH/${LINK_EACH_USER}/keep-skill" ] && [ -f "$PH/${LINK_EACH_USER}/keep-skill/SKILL.md" ] &&
+  ok "正常的 Skill 软链保留" || bad "正常的 Skill 软链被误删"
+[ -d "$PH/${LINK_EACH_USER}/vendor-own" ] && [ -L "$PH/${LINK_EACH_USER}/vendor-own/nested-dead" ] &&
+  ok "实体目录与其中的悬空软链都保留（不递归）" || bad "清理递归进了实体目录"
+
+before_p="$(find "$PH" | sort | md5sum)"
+run prune --scope user --source "$WORKSPACE" --target "$PH" --yes >/dev/null 2>&1
+[ "$before_p" = "$(find "$PH" | sort | md5sum)" ] && ok "重复 prune 无变化" || bad "重复 prune 仍有变化"
+
+# prune 只清理，不建链：共享库里未建链的 Skill 不会因此被补上软链。
+PN="$(fresh_home)"
+mkdir -p "$PN/${SKILLS_ROOT_USER}/lonely-skill"
+printf 'x\n' >"$PN/${SKILLS_ROOT_USER}/lonely-skill/SKILL.md"
+run prune --scope user --source "$WORKSPACE" --target "$PN" --yes >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$PN/${LINK_EACH_USER}/lonely-skill" ] && [ ! -L "$PN/${LINK_EACH_USER}/lonely-skill" ] &&
+  ok "prune 不建链" || bad "prune 建立了软链（退出码 $rc）"
+
+# 无终端且未带 --yes：确认失败，什么都不删。
+ln -s /nonexistent/again "$PH/${LINK_EACH_USER}/again"
+run_no_tty prune --scope user --source "$WORKSPACE" --target "$PH" >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ -L "$PH/${LINK_EACH_USER}/again" ] &&
+  ok "无终端且未带 --yes 时非零退出且不删" || bad "确认失败后仍删除了软链（退出码 $rc）"
+
+# 文件名含 | 的悬空软链：计划行以 | 分隔，这类条目跳过，不影响其它清理。
+ln -s /nonexistent/odd "$PH/${SKILLS_ROOT_USER}/odd|name"
+run prune --scope user --source "$WORKSPACE" --target "$PH" --yes >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ -L "$PH/${SKILLS_ROOT_USER}/odd|name" ] && [ ! -L "$PH/${LINK_EACH_USER}/again" ] &&
+  ok "名称含 | 的条目跳过，其它悬空软链照常清理" || bad "含 | 的条目处理不当（退出码 $rc）"
+
+# 整目录软链（project 声明 link-dir）本身悬空：prune 清掉，常规运行再重建为正确的相对软链。
+PP="$(fresh_home)"
+mkdir -p "$PP/${SKILLS_ROOT_PROJ}/some-skill" "$(dirname "$PP/${LINK_DIR_PROJ}")"
+printf 'x\n' >"$PP/${SKILLS_ROOT_PROJ}/some-skill/SKILL.md"
+ln -s /nonexistent/gone-dir "$PP/${LINK_DIR_PROJ}"
+run --scope project --source "$WORKSPACE" --target "$PP" --yes >/dev/null 2>&1
+[ -L "$PP/${LINK_DIR_PROJ}" ] && [ ! -e "$PP/${LINK_DIR_PROJ}" ] &&
+  ok "常规运行时悬空的整目录软链保留" || bad "常规运行时整目录软链被改动"
+run prune --scope project --source "$WORKSPACE" --target "$PP" --yes >/dev/null 2>&1
+[ ! -L "$PP/${LINK_DIR_PROJ}" ] && ok "prune 清掉悬空的整目录软链" || bad "prune 未清掉悬空的整目录软链"
+run --scope project --source "$WORKSPACE" --target "$PP" --yes >/dev/null 2>&1
+want_pp="$(rel_prefix "$LINK_DIR_PROJ")${SKILLS_ROOT_PROJ}"
+[ "$(readlink "$PP/${LINK_DIR_PROJ}")" = "$want_pp" ] &&
+  ok "常规运行把整目录软链重建为正确的相对软链" || bad "整目录软链未重建（$(readlink "$PP/${LINK_DIR_PROJ}" 2>/dev/null)）"
+
+# 先 prune 再获取：共享库里与来源 Skill 同名的悬空软链，清掉后获取才能落地。
+PR="$(fresh_home)"
+REPO_P="$(make_repo)"
+mkdir -p "$PR/${SKILLS_ROOT_USER}"
+ln -s /nonexistent/alpha-skill "$PR/${SKILLS_ROOT_USER}/alpha-skill"
+run prune --scope user --source "$WORKSPACE" --target "$PR" --yes >/dev/null 2>&1
+run --scope user --source "$WORKSPACE" --target "$PR" --repo "$REPO_P" --yes >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && [ -f "$PR/${SKILLS_ROOT_USER}/alpha-skill/SKILL.md" ] && [ ! -L "$PR/${SKILLS_ROOT_USER}/alpha-skill" ] &&
+  ok "先 prune 清掉同名悬空软链，再获取即可落地" || bad "获取未能落地（退出码 $rc）"
+
+# prune 不接受获取相关的选项：与 --repo 同用时在任何改动之前拦截。
+PX="$(fresh_home)"
+mkdir -p "$PX/${SKILLS_ROOT_USER}"
+ln -s /nonexistent/refused "$PX/${SKILLS_ROOT_USER}/refused"
+before_x="$(find "$PX" | sort | md5sum)"
+run prune --scope user --source "$WORKSPACE" --target "$PX" --repo "$REPO_P" --yes >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ "$before_x" = "$(find "$PX" | sort | md5sum)" ] &&
+  ok "prune 与 --repo 同用时在任何改动之前拦截" || bad "prune 与 --repo 同用未被拦截（退出码 $rc）"
+
+# prune 与 --install 同用：下载前拦截，不产生任何请求与安装。
+H_X="$(mktemp -d /tmp/instX.XXXXXX)"
+: >"$LOG"
+with_home "$H_X" "$SHELL_BIN" "$SCRIPT_UNDER_TEST" prune --install >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -s "$LOG" ] && [ ! -e "$H_X/.local" ] &&
+  ok "prune 与 --install 同用时在下载前拦截" || bad "prune 与 --install 同用未被拦截（退出码 $rc）"
+
 printf '\n通过 %s，失败 %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

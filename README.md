@@ -235,7 +235,7 @@ Linking only considers directories in the store that contain a `SKILL.md`.
 | A symlink pointing outside the store, broken or not | Skipped |
 | A real directory or file | Skipped |
 
-Symlinks in the agent's directory that point into the store but no longer resolve to a Skill are removed. Alias symlinks are kept as long as they still resolve to a Skill. Everything else is left alone, such as the agent's built-in Skills and symlinks pointing elsewhere.
+Symlinks in the agent's directory that point into the store but no longer resolve to a Skill are removed. Alias symlinks are kept as long as they still resolve to a Skill. Everything else is left alone, such as the agent's built-in Skills and symlinks pointing elsewhere. To clean up other dangling symlinks, see [Clean up dangling links](#clean-up-dangling-links).
 
 `link-dir` works on the agent's Skills directory as a whole:
 
@@ -262,6 +262,23 @@ Symlinks in the agent's directory that point into the store but no longer resolv
 - Backups stay outside the store because agents that read the store natively, or link to it as a whole directory, would otherwise load a backup as a duplicate Skill. Legacy `<name>.local.bak` backups left inside the store by older versions are moved out during linking.
 
 </details>
+
+### Clean up dangling links
+
+A dangling symlink exists, but its target does not. Normal runs only remove symlinks that point into the store and no longer resolve to a Skill (see above). The `prune` subcommand also removes dangling symlinks from these places:
+
+- The direct children of each agent's Skills directory.
+- The direct children of the store.
+
+Links pointing outside the store are included. `prune` only removes links: it does not fetch and does not link. Real directories and files are never touched, and nothing is removed recursively.
+
+If a dangling link in the store has the same name as a Skill being fetched, the fetch fails. Run `prune` before fetching.
+
+A link to a target that is only temporarily unavailable, such as an unmounted disk, looks dangling too. Preview first:
+
+```bash
+setup-skills prune --scope user --dry-run
+```
 
 ---
 
@@ -306,6 +323,7 @@ curl -fsSL "https://raw.githubusercontent.com/xianghongai/agents-env/main/setup-
 - **Previews first.** Both scripts print the full plan and act only after confirmation during ordinary runs. `--dry-run` shows the plan and makes no changes.
 - **Verify before replacing.** `--install` and `--update` download and check every file first, and stop completely if any file fails. They don't ask for confirmation, so preview them with `--dry-run` first.
 - **Keeps backups out of git.** The `.local.bak` suffix matches the `*.local.*` rule found in common `.gitignore` files.
+- **Dangling links only.** `prune` removes symbolic links only, never directories, and never recurses.
 - **Relative symlinks.** Links keep working after the directory tree is moved.
 
 ## Requirements
@@ -336,6 +354,7 @@ Each script is self-contained and needs no Node.js or Python. When a script runs
 | `--dry-run` | Show the plan only |
 | `-y, --yes` | Skip the confirmation. Required without a terminal |
 | `-f, --force` | Replace same-named Skills. Implies `--yes` |
+| `prune` (subcommand) | Remove dangling symlinks (targets that do not exist) only. Fetches and links nothing. Accepts only `--scope`, `--target`, `--source`, `--branch`, `--dry-run` and `--yes` |
 | `--install` | Install both commands into `~/.local/bin`, with their data in `~/.local/share/agents-env`. Accepts only `--branch` and `--dry-run` |
 | `--update` | Update the installed commands and their data. Accepts only `--branch` and `--dry-run` |
 | `-h, --help` | Show help and exit |
